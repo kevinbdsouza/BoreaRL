@@ -118,15 +118,6 @@ python -c "from borearl.utils.plotting import plot_profiling_statistics; plot_pr
 - Carbon limits are enforced with penalties at the RL layer and clipping in diagnostics.
 - Thinning is preferentially applied to old trees; planting adds seedlings with chosen species mix.
 
-## Testing and reproducibility
-Run the test suite after activating your virtual environment:
-
-```bash
-python -m pytest -q
-```
-
-Tests cover demography, carbon accounting, thaw metric, logging, preference handling, disturbances, and environment dynamics.
-
 ## Citation
 If you use BoreaRL in your research, please cite this repository. A formal citation will be added once a preprint is available.
 
