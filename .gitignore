@@ -3,8 +3,16 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+.DS_Store
+.idea/
+
 # C extensions
 *.so
+models/
+plots/
+bck/
+wandb/
+csv_logs/
 
 # Distribution / packaging
 .Python
