@@ -13,10 +13,6 @@ EPISODE_LENGTH_YEARS = 50
 DENSITY_ACTIONS = [-100, -50, 0, 50, 100]
 CONIFER_FRACTIONS = [0.0, 0.25, 0.5, 0.75, 1.0]
 
-# Reward weights
-W_CARBON = 1.0
-W_THAW = 0.01
-
 # Normalization constants
 MAX_TOTAL_CARBON = 50.0
 MAX_GPP = 2.0
@@ -54,7 +50,7 @@ INEFFECTIVE_PLANTING_PENALTY = 0.1
 # Carbon stock limits (RL-level for penalties; hard caps enforced in simulator diag only)
 MAX_BIOMASS_CARBON_LIMIT = 15.0
 MAX_SOIL_CARBON_LIMIT = 20.0
-CARBON_LIMIT_PENALTY = 0.01
+CARBON_LIMIT_PENALTY = 0.05
 
 # Density penalties
 MAX_DENSITY_PENALTY = 0.1
@@ -63,14 +59,32 @@ MAX_DENSITY_PENALTY = 0.1
 SAFE_MIN_DENSITY_THINNING = 150
 
 # Reward normalization constants
-MAX_CARBON_CHANGE_PER_YEAR = 1.0
-MAX_THAW_DEGREE_DAYS_PER_YEAR = 10.0
+MAX_CARBON_CHANGE_PER_YEAR = 2.0
+MAX_THAW_DEGREE_DAYS_PER_YEAR = 2.0
+
+# Reward standardization defaults
+# Set to False to log non-standardized rewards by default while keeping the
+# option to enable per-run via env config `standardize_rewards=True`.
+STANDARDIZE_REWARDS_DEFAULT = False
+REWARD_EMA_BETA_DEFAULT = 0.99
 
 # Stock bonus multiplier for carbon stock incentive
-STOCK_BONUS_MULTIPLIER = 0.1
+STOCK_BONUS_MULTIPLIER = 0.0
 
 # Default ESR/EUPG scalarization weights (used for logging/eval defaults)
-EUPG_DEFAULT_WEIGHTS = (0.5, 0.5)
+EUPG_DEFAULT_WEIGHTS = (1.0, 0.0)
+
+# Preference selection behavior for episodes
+# When True, the environment will use the fixed preference vector in
+# `EUPG_DEFAULT_WEIGHTS` for every episode instead of randomizing a
+# new preference weight. The scalar preference weight used is the
+# first element of `EUPG_DEFAULT_WEIGHTS`.
+USE_FIXED_PREFERENCE_DEFAULT = True
+
+# EUPG hyperparameter defaults
+EUPG_GAMMA_DEFAULT = 0.99
+EUPG_LEARNING_RATE_DEFAULT = 0.001
+EUPG_NET_ARCH_DEFAULT = [128, 64]
 
 # Initial state ranges for environment reset
 INITIAL_DENSITY_RANGE = (0, 600)  # stems/ha
@@ -79,12 +93,12 @@ INITIAL_BIOMASS_CARBON_RANGE = (1.0, 10.0)  # kg C/m²
 INITIAL_SOIL_CARBON_RANGE = (2.0, 10.0)  # kg C/m²
 
 # Site-specific mode defaults (env-level)
-# When None, the env will inherit the value from `site_specific`.
-SITE_SPECIFIC_DEFAULT = False
+# The environment defaults site_specific=False if not provided; temperature noise determinism
+# and age jitter toggles default to the site-specific flag within the environment.
 SITE_WEATHER_SEED_DEFAULT = 123456
-DETERMINISTIC_TEMP_NOISE_DEFAULT = None  # None => use site_specific
-REMOVE_AGE_JITTER_DEFAULT = None         # None => use site_specific
+
 INCLUDE_SITE_PARAMS_IN_OBS_DEFAULT = True  # Generalist-only observation augmentation
+
 USE_FIXED_SITE_INITIALS_DEFAULT = True   # If True, use fixed site defaults for initial state instead of sampling ranges
 
 # Default site parameter overrides (midpoints of physics ranges)

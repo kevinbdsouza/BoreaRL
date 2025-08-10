@@ -20,10 +20,14 @@ fi
 echo "Virtual environment activated: $VIRTUAL_ENV"
 echo ""
 
+# Determine agent (default: eupg). Accept from first CLI arg or AGENT env var.
+AGENT_ARG=${1:-${AGENT:-eupg}}
+MODEL_FILE="models/${AGENT_ARG}_forest_manager.pth"
+
 # Training phase
 echo "=== PHASE 1: TRAINING ==="
-echo "Training MORL agent with 500,000 timesteps..."
-python main.py --train --timesteps 500000 --site_specific
+echo "Training MORL agent (${AGENT_ARG}) with 10,000 timesteps..."
+python main.py --train --timesteps 10000 --site_specific --agent ${AGENT_ARG}
 
 # Check if training was successful
 if [ $? -ne 0 ]; then
@@ -32,13 +36,13 @@ if [ $? -ne 0 ]; then
 fi
 
 echo "Training completed successfully!"
-echo "Model saved as: models/eupg_forest_manager.pth"
+echo "Model saved as: ${MODEL_FILE} (if supported by the selected agent)"
 echo ""
 
 # Evaluation phase
 echo "=== PHASE 2: EVALUATION ==="
-echo "Evaluating model across different preference weights..."
-python main.py --evaluate --model_path models/eupg_forest_manager.pth --eval_episodes 100
+echo "Evaluating model across different preference weights using agent ${AGENT_ARG}..."
+python main.py --evaluate --model_path ${MODEL_FILE} --eval_episodes 100 --site_specific --config logs/config.yaml --agent ${AGENT_ARG}
 
 # Check if evaluation was successful
 if [ $? -ne 0 ]; then

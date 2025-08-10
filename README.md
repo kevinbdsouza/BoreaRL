@@ -10,16 +10,19 @@ BoreaRL is a physically-grounded multi-objective reinforcement learning benchmar
 ### Repository layout
 - `borearl/env/forest_env.py`: Multi-objective Gym environment (`ForestEnv`) and Gym registration (`ForestEnv-v0`).
 - `borearl/constants.py`: Shared RL-level constants used by the environment and training.
-- `borearl/agents/eupg.py`: MORL training/evaluation entrypoints for EUPG.
+- `borearl/agents/runner.py`: Unified training/evaluation entrypoints.
+- `borearl/agents/eupg_agent.py`, `pcn_agent.py`, `chm_agent.py`, `gpi_ls_agent.py`: Agent-specific factories.
+- `borearl/agents/common.py`: Shared helpers for env and config.
+- `borearl/agents/baseline.py`: Baselines and counterfactual sensitivity.
 - `borearl/utils/`: Profiling and plotting utilities.
-- `main.py`: Thin CLI wrapper for training and evaluation (uses `borearl.agents.eupg`).
+- `main.py`: Thin CLI wrapper for training and evaluation (routes via `borearl.agents.runner`).
 - `borearl/physics/`: Modular physics package.
   - `energy_balance.py`: Simulator implementation (`ForestSimulator`).
   - `weather.py`: Weather/climate utilities.
   - `config.py`: Physics configuration and parameter ranges.
   - `constants.py`: Shared physics constants.
   - `demography.py`: Natural demography helpers.
-- `csv_logs/`, `plots/`: Outputs for metrics and figures.
+- `logs/`, `plots/`: Outputs for metrics and figures.
 
 ## Environment overview
 ### Actions (annual management)
@@ -99,7 +102,7 @@ print(res['final_biomass_carbon_kg_m2'], res['thaw_degree_days'])
 ```
 
 ## Logging, outputs, and artifacts
-- **CSV metrics**: Per-step and per-episode logs in `csv_logs/` with timestamps. Includes actions, rewards, state summaries, carbon changes, disturbances, and age-structure snapshots.
+- **CSV metrics**: Per-step and per-episode logs in `logs/` with timestamps. Includes actions, rewards, state summaries, carbon changes, disturbances, and age-structure snapshots.
 - **Episode plots**: Saved to `plots/episode_<N>_statistics.png` every 1000 episodes.
 - **Profiling**: Comprehensive timing via `TimeProfiler`; after training, profiling plots are saved as `plots/profiling_plots_<timestamp>.png` (or repository root if run standalone). You can also run:
 

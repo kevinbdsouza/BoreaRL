@@ -13,6 +13,7 @@ plots/
 bck/
 wandb/
 csv_logs/
+logs/
 
 # Distribution / packaging
 .Python

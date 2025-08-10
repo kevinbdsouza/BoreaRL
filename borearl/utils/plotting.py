@@ -119,7 +119,7 @@ def plot_profiling_statistics(profiling_data_file: Optional[str] = None):
 
 
 
-def _find_latest_step_metrics_csv(csv_logs_dir: str = "csv_logs") -> Optional[str]:
+def _find_latest_step_metrics_csv(csv_logs_dir: str = "logs") -> Optional[str]:
     """Return the latest step_metrics_*.csv path from the given directory, if any."""
     pattern = os.path.join(csv_logs_dir, "step_metrics_*.csv")
     matches: List[str] = sorted(glob.glob(pattern))
@@ -130,7 +130,7 @@ def _find_latest_step_metrics_csv(csv_logs_dir: str = "csv_logs") -> Optional[st
 
 def plot_step_reward_histograms(
     csv_path: Optional[str] = None,
-    csv_logs_dir: str = "csv_logs",
+    csv_logs_dir: str = "logs",
     bins: int = 50,
     figsize: tuple = (16, 10),
     save: bool = True,

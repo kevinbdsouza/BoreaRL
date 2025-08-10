@@ -12,7 +12,9 @@ import os
 import matplotlib.pyplot as plt
 import numpy as np
 
-from borearl.agents.eupg import train_morl, evaluate_morl_policy, run_counterfactual_sensitivity
+from borearl.agents.runner import train as train_morl, evaluate as evaluate_morl_policy
+from borearl.agents import AGENTS as _AVAILABLE_AGENTS
+from borearl.agents.common import load_simple_yaml
 from borearl import constants as const
 from borearl.utils.plotting import plot_profiling_statistics
 
@@ -22,26 +24,65 @@ def main():
     parser.add_argument("--train", action="store_true", help="Train a new model.")
     parser.add_argument("--evaluate", action="store_true", help="Evaluate a trained model.")
     parser.add_argument("--model_path", type=str, default="models/eupg_forest_manager.pth", help="Path to the MORL model file.")
+    # Dynamically expose only available agents (based on optional deps present)
+    _agent_choices = sorted(list(_AVAILABLE_AGENTS.keys())) or ["eupg"]
+    parser.add_argument(
+        "--agent",
+        type=str,
+        choices=_agent_choices,
+        default=_agent_choices[0],
+        help=f"Which MORL agent to use. Available: {', '.join(_agent_choices)}",
+    )
     parser.add_argument("--timesteps", type=int, default=500000, help="Number of timesteps for training.")
     parser.add_argument("--site_specific", action="store_true", help="Enable site-specific mode (fixed weather seed, deterministic temp noise, no age jitter; uses defaults in constants unless overridden).")
     parser.add_argument("--eval_episodes", type=int, default=100, help="Number of episodes per weight for evaluation.")
+    parser.add_argument("--config", type=str, default=None, help="Path to YAML config to override eval settings (defaults to logs/config.yaml if present).")
     parser.add_argument("--no_wandb", action="store_true", help="Disable wandb logging for both training and evaluation.")
     parser.add_argument("--plot_profile", type=str, default=None, help="Path to saved profiling JSON to plot. If omitted, plots current profiler data.")
-    parser.add_argument("--counterfactual", action="store_true", help="Run counterfactual sensitivity analysis and exit.")
+    parser.add_argument("--baseline", action="store_true", help="Run baselines and counterfactual analysis and exit.")
     args = parser.parse_args()
 
     if args.no_wandb:
         print("Wandb logging disabled via environment variables")
 
-    if args.counterfactual:
-        run_counterfactual_sensitivity(
-            num_rng_samples=const.COUNTERFACTUAL_SAMPLES_DEFAULT,
-            fixed_preference=const.COUNTERFACTUAL_PREF_DEFAULT,
-        )
+    if args.baseline:
+        from borearl.agents.baseline import run_baselines
+        run_baselines(output_dir='logs', fixed_preference=const.COUNTERFACTUAL_PREF_DEFAULT)
     elif args.train:
-        train_morl(total_timesteps=args.timesteps, use_wandb=not args.no_wandb, site_specific=args.site_specific)
+        train_morl(
+            total_timesteps=args.timesteps,
+            use_wandb=not args.no_wandb,
+            site_specific=args.site_specific,
+            algorithm=args.agent,
+        )
     elif args.evaluate:
-        results = evaluate_morl_policy(model_path=args.model_path, n_eval_episodes=args.eval_episodes, use_wandb=not args.no_wandb, site_specific=args.site_specific)
+        # If user kept default model path but chose a different agent, adjust to algorithm-specific default
+        default_eupg_path = "models/eupg_forest_manager.pth"
+        if args.model_path == default_eupg_path and args.agent != "eupg":
+            alt_default = os.path.join("models", f"{args.agent}_forest_manager.pth")
+            if os.path.exists(alt_default):
+                args.model_path = alt_default
+        # Load config overrides from YAML file if provided or if default exists
+        config_overrides = None
+        try:
+            if args.config:
+                if os.path.exists(args.config):
+                    config_overrides = load_simple_yaml(args.config)
+            else:
+                default_cfg = os.path.join("logs", "config.yaml")
+                if os.path.exists(default_cfg):
+                    config_overrides = load_simple_yaml(default_cfg)
+        except Exception as e:
+            print(f"Warning: failed to load config from YAML: {e}")
+
+        results = evaluate_morl_policy(
+            model_path=args.model_path,
+            n_eval_episodes=args.eval_episodes,
+            use_wandb=not args.no_wandb,
+            site_specific=args.site_specific,
+            config_overrides=config_overrides,
+            algorithm=args.agent,
+        )
         # Optional: quick summary
         if results:
             print("\nWeight\t\tCarbon\t\tThaw\t\tScalarized")
