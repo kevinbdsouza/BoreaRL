@@ -11,15 +11,28 @@ from .common import (
 from borearl import constants as const
 
 
-def create(env, unwrapped_env, use_wandb: bool):
+def create(
+    env,
+    unwrapped_env,
+    use_wandb: bool,
+    *,
+    weights=None,
+    gamma=None,
+    learning_rate=None,
+    net_arch=None,
+):
     scalarization = build_dynamic_scalarization(unwrapped_env)
+    sel_weights = np.array(weights) if weights is not None else np.array(const.EUPG_DEFAULT_WEIGHTS)
+    sel_gamma = float(gamma) if gamma is not None else const.EUPG_GAMMA_DEFAULT
+    sel_lr = float(learning_rate) if learning_rate is not None else const.EUPG_LEARNING_RATE_DEFAULT
+    sel_arch = list(net_arch) if net_arch is not None else const.EUPG_NET_ARCH_DEFAULT
     return EUPG(
         env=env,
         scalarization=scalarization,
-        weights=np.array(const.EUPG_DEFAULT_WEIGHTS),
-        gamma=const.EUPG_GAMMA_DEFAULT,
-        learning_rate=const.EUPG_LEARNING_RATE_DEFAULT,
-        net_arch=const.EUPG_NET_ARCH_DEFAULT,
+        weights=sel_weights,
+        gamma=sel_gamma,
+        learning_rate=sel_lr,
+        net_arch=sel_arch,
         log=bool(use_wandb),
         project_name="Forest-MORL" if use_wandb else "",
         experiment_name="EUPG-Forest" if use_wandb else "",

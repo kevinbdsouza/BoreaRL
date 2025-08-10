@@ -134,14 +134,30 @@ def evaluate(
         raise ValueError(f"Unknown algorithm '{algorithm}'. Choose from eupg, pcn, chm, gpi_ls.")
     agent_mod = AGENTS[algo_key]
 
-    # Set weights and hyperparameters from config_overrides when present
-    selected_weights = np.array(config_overrides.get('weights', const.EUPG_DEFAULT_WEIGHTS)) if config_overrides else np.array(const.EUPG_DEFAULT_WEIGHTS)
-    selected_net_arch = config_overrides.get('net_arch', const.EUPG_NET_ARCH_DEFAULT) if config_overrides else const.EUPG_NET_ARCH_DEFAULT
-    selected_gamma = float(config_overrides.get('gamma', const.EUPG_GAMMA_DEFAULT)) if config_overrides else const.EUPG_GAMMA_DEFAULT
-    selected_lr = float(config_overrides.get('learning_rate', const.EUPG_LEARNING_RATE_DEFAULT)) if config_overrides else const.EUPG_LEARNING_RATE_DEFAULT
+    # Build model for inference, applying optional overrides from config
+    selected_weights = None
+    selected_net_arch = None
+    selected_gamma = None
+    selected_lr = None
+    if config_overrides:
+        if 'weights' in config_overrides:
+            selected_weights = np.array(config_overrides['weights'])
+        if 'net_arch' in config_overrides:
+            selected_net_arch = config_overrides['net_arch']
+        if 'gamma' in config_overrides:
+            selected_gamma = float(config_overrides['gamma'])
+        if 'learning_rate' in config_overrides:
+            selected_lr = float(config_overrides['learning_rate'])
 
-    # Build model for inference
-    model = agent_mod.create(env, unwrapped_env, use_wandb)
+    model = agent_mod.create(
+        env,
+        unwrapped_env,
+        use_wandb,
+        weights=selected_weights,
+        gamma=selected_gamma,
+        learning_rate=selected_lr,
+        net_arch=selected_net_arch,
+    )
     # Load model params
     try:
         if agent_mod.supports_single_policy_eval():
@@ -167,8 +183,8 @@ def evaluate(
     for weight in eval_weights:
         carbon_rewards, thaw_rewards, scalarized_rewards = [], [], []
         for _ in range(n_eval_episodes):
-            obs, info = venv.reset()
             venv.set_attr("current_preference_weight", float(weight[0]))
+            obs, info = venv.reset()
             terminated, truncated = False, False
             episode_carbon, episode_thaw = 0.0, 0.0
             acc_reward = torch.zeros((1, 2), dtype=torch.float32)
