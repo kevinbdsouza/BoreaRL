@@ -13,6 +13,8 @@ EPISODE_LENGTH_YEARS = 50
 DENSITY_ACTIONS = [-100, -50, 0, 50, 100]
 CONIFER_FRACTIONS = [0.0, 0.25, 0.5, 0.75, 1.0]
 
+HISTORY_WINDOW = 2
+
 # Normalization constants
 MAX_TOTAL_CARBON = 50.0
 MAX_GPP = 2.0
@@ -44,16 +46,16 @@ MAX_HWP_SALES_PER_YEAR = 1.0
 HWP_SALE_REWARD_MULTIPLIER = 0.0
 
 # Ineffective action penalties
-INEFFECTIVE_THINNING_PENALTY = 0.1
-INEFFECTIVE_PLANTING_PENALTY = 0.1
+INEFFECTIVE_THINNING_PENALTY = 0.5
+INEFFECTIVE_PLANTING_PENALTY = 0.5
 
 # Carbon stock limits (RL-level for penalties; hard caps enforced in simulator diag only)
 MAX_BIOMASS_CARBON_LIMIT = 15.0
 MAX_SOIL_CARBON_LIMIT = 20.0
-CARBON_LIMIT_PENALTY = 0.05
+CARBON_LIMIT_PENALTY = 0.5
 
 # Density penalties
-MAX_DENSITY_PENALTY = 0.1
+MAX_DENSITY_PENALTY = 0.5
 
 # Thinning floor to avoid unrealistic collapses but still allow learning
 SAFE_MIN_DENSITY_THINNING = 150
@@ -82,7 +84,7 @@ EUPG_DEFAULT_WEIGHTS = (1.0, 0.0)
 USE_FIXED_PREFERENCE_DEFAULT = True
 
 # EUPG hyperparameter defaults
-EUPG_GAMMA_DEFAULT = 0.99
+EUPG_GAMMA_DEFAULT = 1
 EUPG_LEARNING_RATE_DEFAULT = 0.001
 EUPG_NET_ARCH_DEFAULT = [128, 64]
 
@@ -184,7 +186,12 @@ SITE_DEFAULT_OVERRIDES = {
 }
 
 # Counterfactual sensitivity defaults
-COUNTERFACTUAL_SAMPLES_DEFAULT = 100
+COUNTERFACTUAL_SAMPLES_DEFAULT = 5
 COUNTERFACTUAL_PREF_DEFAULT = 0.5
+
+# Evaluation behavior
+# If True, actions during evaluation are selected via argmax over logits (greedy).
+# If False, actions are sampled from the categorical distribution defined by logits.
+EVAL_USE_ARGMAX_ACTIONS = False
 
 

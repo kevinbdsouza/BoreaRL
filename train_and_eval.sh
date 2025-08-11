@@ -22,14 +22,11 @@ echo ""
 
 # Determine agent (default: eupg). Accept from first CLI arg or AGENT env var.
 AGENT_ARG=${1:-${AGENT:-eupg}}
-MODEL_FILE="models/${AGENT_ARG}_forest_manager.pth"
+# Optional run directory name from env RUN_DIR or 2nd arg
+RUN_DIR_NAME=${2:-${RUN_DIR:-}} 
+python main.py --train_then_eval --timesteps 200000 --eval_episodes 100 --agent ${AGENT_ARG} ${RUN_DIR_NAME:+--run_dir_name ${RUN_DIR_NAME}}
 
-# Training phase
-echo "=== PHASE 1: TRAINING ==="
-echo "Training MORL agent (${AGENT_ARG}) with 10,000 timesteps..."
-python main.py --train --timesteps 10000 --site_specific --agent ${AGENT_ARG}
-
-# Check if training was successful
+# Check if training was successfu
 if [ $? -ne 0 ]; then
     echo "Error: Training failed. Exiting."
     exit 1
@@ -39,18 +36,6 @@ echo "Training completed successfully!"
 echo "Model saved as: ${MODEL_FILE} (if supported by the selected agent)"
 echo ""
 
-# Evaluation phase
-echo "=== PHASE 2: EVALUATION ==="
-echo "Evaluating model across different preference weights using agent ${AGENT_ARG}..."
-python main.py --evaluate --model_path ${MODEL_FILE} --eval_episodes 100 --site_specific --config logs/config.yaml --agent ${AGENT_ARG}
-
-# Check if evaluation was successful
-if [ $? -ne 0 ]; then
-    echo "Error: Evaluation failed."
-    exit 1
-fi
-
-echo ""
 echo "=== COMPLETED ==="
 echo "Training and evaluation completed successfully!"
 echo "Results saved as: plots/morl_pareto_front.png"

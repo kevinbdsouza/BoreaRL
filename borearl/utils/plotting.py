@@ -11,7 +11,7 @@ import pandas as pd
 from .profiling import profiler
 
 
-def plot_profiling_statistics(profiling_data_file: Optional[str] = None):
+def plot_profiling_statistics(profiling_data_file: Optional[str] = None, show: bool = False):
     if profiling_data_file:
         with open(profiling_data_file, 'r') as f:
             data = json.load(f)
@@ -115,7 +115,10 @@ def plot_profiling_statistics(profiling_data_file: Optional[str] = None):
     plot_filename = os.path.join(plots_dir, f"profiling_plots_{timestamp}.png")
     plt.savefig(plot_filename, dpi=300, bbox_inches='tight')
     print(f"Profiling plots saved to: {plot_filename}")
-    plt.show()
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
 
 
 

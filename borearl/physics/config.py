@@ -108,7 +108,7 @@ def get_model_config() -> Dict[str, Any]:
         k_snow_pack=0.3,
         PT_ALPHA=1.26,
         PAR_FRACTION=0.5,
-        LUE_J_TO_G_C=1e-6,
+        LUE_J_TO_G_C=5e-7,
         GPP_SCALING_BIOMASS_THRESHOLD_kg_m2=12.0,
         R_BASE_KG_M2_YR_range=(0.30, 0.4),
         R_BASE_SOIL_KG_M2_YR_range=(0.4, 0.6),

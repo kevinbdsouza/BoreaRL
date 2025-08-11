@@ -70,67 +70,66 @@ def set_env_preference(env, pref: float):
 
 
 def save_run_config(env, agent_name: str, model: Any, total_timesteps: int):
+    unwrapped = getattr(env, 'unwrapped', env)
+    env_conf = {
+        'site_specific': bool(getattr(unwrapped, 'site_specific', False)),
+        'include_site_params_in_obs': bool(getattr(unwrapped, 'include_site_params_in_obs', False)),
+        'observation_size': int(getattr(unwrapped, 'observation_space', getattr(env, 'observation_space')).shape[0]),
+        'reward_dim': int(getattr(unwrapped, 'reward_space', getattr(unwrapped, 'reward_space')).shape[0]),
+        'standardize_rewards': bool(getattr(unwrapped, 'enable_reward_standardization', False)),
+        'reward_ema_beta': float(getattr(unwrapped, 'reward_ema_beta', 0.99)),
+        'site_weather_seed': int(getattr(unwrapped, 'site_weather_seed', 0)),
+        'deterministic_temp_noise': bool(getattr(unwrapped, 'deterministic_temp_noise', False)),
+        'remove_age_jitter': bool(getattr(unwrapped, 'remove_age_jitter', False)),
+        # Read directly from env attribute populated during ForestEnv.__init__
+        'use_fixed_site_initials': bool(getattr(unwrapped, 'use_fixed_site_initials', False)),
+        'csv_logging_enabled': bool(getattr(unwrapped, 'csv_logging_enabled', True)),
+        'csv_output_dir': str(getattr(unwrapped, 'csv_output_dir', 'logs')),
+        'use_fixed_preference': bool(getattr(unwrapped, 'use_fixed_preference', False)),
+        # Load directly from env (env guarantees attribute is set in __init__)
+        'eupg_default_weights': list(getattr(unwrapped, 'eupg_default_weights')),
+    }
+    if bool(getattr(unwrapped, 'site_specific', False)):
+        env_conf['site_overrides'] = dict(getattr(unwrapped, 'site_overrides', {}))
+
     try:
-        unwrapped = getattr(env, 'unwrapped', env)
-        env_conf = {
-            'site_specific': bool(getattr(unwrapped, 'site_specific', False)),
-            'include_site_params_in_obs': bool(getattr(unwrapped, 'include_site_params_in_obs', False)),
-            'observation_size': int(getattr(unwrapped, 'observation_space', getattr(env, 'observation_space')).shape[0]),
-            'reward_dim': int(getattr(unwrapped, 'reward_space', getattr(unwrapped, 'reward_space')).shape[0]),
-            'standardize_rewards': bool(getattr(unwrapped, 'enable_reward_standardization', False)),
-            'reward_ema_beta': float(getattr(unwrapped, 'reward_ema_beta', 0.99)),
-            'site_weather_seed': int(getattr(unwrapped, 'site_weather_seed', 0)),
-            'deterministic_temp_noise': bool(getattr(unwrapped, 'deterministic_temp_noise', False)),
-            'remove_age_jitter': bool(getattr(unwrapped, 'remove_age_jitter', False)),
-            'use_fixed_site_initials': bool(getattr(unwrapped, 'config', {}).get('use_fixed_site_initials', const.USE_FIXED_SITE_INITIALS_DEFAULT)) if bool(getattr(unwrapped, 'site_specific', False)) else False,
-            'csv_logging_enabled': bool(getattr(unwrapped, 'csv_logging_enabled', True)),
-            'csv_output_dir': str(getattr(unwrapped, 'csv_output_dir', 'logs')),
-            'use_fixed_preference': bool(getattr(unwrapped, 'use_fixed_preference', False)),
-            'eupg_default_weights': list(getattr(unwrapped, 'eupg_default_weights', const.EUPG_DEFAULT_WEIGHTS)),
-        }
-        if bool(getattr(unwrapped, 'site_specific', False)):
-            env_conf['site_overrides'] = dict(getattr(unwrapped, 'site_overrides', {}))
+        weights = getattr(model, 'weights', None)
+        weights_list = list(weights.tolist()) if hasattr(weights, 'tolist') else (list(weights) if weights is not None else None)
+    except Exception:
+        weights_list = None
 
-        try:
-            weights = getattr(model, 'weights', None)
-            weights_list = list(weights.tolist()) if hasattr(weights, 'tolist') else (list(weights) if weights is not None else None)
-        except Exception:
-            weights_list = None
+    agent_conf = {
+        'algorithm': str(agent_name).lower(),
+        'gamma': float(getattr(model, 'gamma', const.EUPG_GAMMA_DEFAULT)),
+        'learning_rate': float(getattr(model, 'learning_rate', const.EUPG_LEARNING_RATE_DEFAULT)),
+        'buffer_size': int(getattr(model, 'buffer_size', 0)),
+        'net_arch': list(getattr(model, 'net_arch', const.EUPG_NET_ARCH_DEFAULT)),
+        'weights': weights_list,
+        'device': str(getattr(model, 'device', 'auto')),
+        'seed': int(getattr(model, 'seed', 0)) if getattr(model, 'seed', None) is not None else None,
+        'log': bool(getattr(model, 'log', True)),
+        'log_every': int(getattr(model, 'log_every', 1000)),
+        'project_name': str(getattr(model, 'project_name', '')),
+        'experiment_name': str(getattr(model, 'experiment_name', '')),
+    }
 
-        agent_conf = {
-            'algorithm': str(agent_name).lower(),
-            'gamma': float(getattr(model, 'gamma', const.EUPG_GAMMA_DEFAULT)),
-            'learning_rate': float(getattr(model, 'learning_rate', const.EUPG_LEARNING_RATE_DEFAULT)),
-            'buffer_size': int(getattr(model, 'buffer_size', 0)),
-            'net_arch': list(getattr(model, 'net_arch', const.EUPG_NET_ARCH_DEFAULT)),
-            'weights': weights_list,
-            'device': str(getattr(model, 'device', 'auto')),
-            'seed': int(getattr(model, 'seed', 0)) if getattr(model, 'seed', None) is not None else None,
-            'log': bool(getattr(model, 'log', True)),
-            'log_every': int(getattr(model, 'log_every', 1000)),
-            'project_name': str(getattr(model, 'project_name', '')),
-            'experiment_name': str(getattr(model, 'experiment_name', '')),
-        }
+    train_conf = {
+        'total_timesteps': int(total_timesteps),
+    }
 
-        train_conf = {
-            'total_timesteps': int(total_timesteps),
-        }
+    config_dict = {
+        'environment': env_conf,
+        'agent': agent_conf,
+        'training': train_conf,
+    }
 
-        config_dict = {
-            'environment': env_conf,
-            'agent': agent_conf,
-            'training': train_conf,
-        }
-
-        output_dir = env_conf['csv_output_dir'] or 'logs'
-        os.makedirs(output_dir, exist_ok=True)
-        yaml_text = "\n".join(yaml_dump(config_dict)) + "\n"
-        path_latest = os.path.join(output_dir, 'config.yaml')
-        with open(path_latest, 'w') as f:
-            f.write(yaml_text)
-        print(f"Saved training config to '{path_latest}'")
-    except Exception as e:
-        print(f"Warning: failed to save run config: {e}")
+    output_dir = env_conf['csv_output_dir'] or 'logs'
+    os.makedirs(output_dir, exist_ok=True)
+    yaml_text = "\n".join(yaml_dump(config_dict)) + "\n"
+    path_latest = os.path.join(output_dir, 'config.yaml')
+    with open(path_latest, 'w') as f:
+        f.write(yaml_text)
+    print(f"Saved training config to '{path_latest}'")
 
 
 def build_preliminary_config(unwrapped_env, agent_name: str, total_timesteps: int):
@@ -144,11 +143,13 @@ def build_preliminary_config(unwrapped_env, agent_name: str, total_timesteps: in
         'site_weather_seed': int(getattr(unwrapped_env, 'site_weather_seed', 0)),
         'deterministic_temp_noise': bool(getattr(unwrapped_env, 'deterministic_temp_noise', False)),
         'remove_age_jitter': bool(getattr(unwrapped_env, 'remove_age_jitter', False)),
-        'use_fixed_site_initials': bool(getattr(unwrapped_env, 'config', {}).get('use_fixed_site_initials', const.USE_FIXED_SITE_INITIALS_DEFAULT)) if bool(getattr(unwrapped_env, 'site_specific', False)) else False,
+        # Read directly from env attribute populated during ForestEnv.__init__
+        'use_fixed_site_initials': bool(getattr(unwrapped_env, 'use_fixed_site_initials', False)),
         'csv_logging_enabled': bool(getattr(unwrapped_env, 'csv_logging_enabled', True)),
         'csv_output_dir': str(getattr(unwrapped_env, 'csv_output_dir', 'logs')),
         'use_fixed_preference': bool(getattr(unwrapped_env, 'use_fixed_preference', False)),
-        'eupg_default_weights': list(getattr(unwrapped_env, 'eupg_default_weights', const.EUPG_DEFAULT_WEIGHTS)),
+        # Load directly from env (env guarantees attribute is set in __init__)
+        'eupg_default_weights': list(getattr(unwrapped_env, 'eupg_default_weights')),
     }
     if bool(getattr(unwrapped_env, 'site_specific', False)):
         pre_env_conf['site_overrides'] = dict(getattr(unwrapped_env, 'site_overrides', {}))
@@ -214,8 +215,7 @@ def default_eval_weights(env_config: dict | None) -> np.ndarray:
             env_default_w = [float(const.EUPG_DEFAULT_WEIGHTS[0]), float(const.EUPG_DEFAULT_WEIGHTS[1])]
         return np.array([env_default_w], dtype=np.float32)
     return np.array([
-        [0.0, 1.0], [0.1, 0.9], [0.2, 0.8], [0.3, 0.7], [0.4, 0.6],
-        [0.5, 0.5], [0.6, 0.4], [0.7, 0.3], [0.8, 0.2], [0.9, 0.1], [1.0, 0.0],
+        [0.0, 1.0], [0.33, 0.67], [0.67, 0.33], [1.0, 0.0],
     ], dtype=np.float32)
 
 
@@ -244,11 +244,27 @@ def _parse_scalar_from_yaml_token(token: str):
 
 
 def load_simple_yaml(path: str) -> dict:
+    """Load YAML configuration robustly.
+
+    Tries PyYAML's safe loader first (if available) and falls back to a
+    minimal parser for simple YAML. This avoids brittle parsing errors
+    with nested lists and mappings.
+    """
+    # Prefer PyYAML if present
+    try:
+        import yaml  # type: ignore
+        with open(path, 'r') as f:
+            data = yaml.safe_load(f)
+        return data if isinstance(data, dict) else (data or {})
+    except Exception:
+        pass
+
+    # Fallback: minimal parser (supports a subset of YAML)
     with open(path, 'r') as f:
         lines = [ln.rstrip("\n") for ln in f]
 
     root: dict | list = {}
-    stack: list[tuple[int, dict | list]] = [(-1, root)]
+    stack: list[tuple[int, dict | list, str | None]] = [(-1, root, None)]
 
     def current_container_for_indent(indent: int):
         while stack and stack[-1][0] >= indent:
@@ -263,24 +279,23 @@ def load_simple_yaml(path: str) -> dict:
         line = raw.strip()
 
         if line.startswith('-'):
+            # Ensure we have a list container to add to
             if not isinstance(container, list):
-                parent_indent, parent_container = stack[-1]
-                if isinstance(parent_container, dict):
-                    if parent_container:
-                        last_key = list(parent_container.keys())[-1]
-                        if not isinstance(parent_container[last_key], list):
-                            parent_container[last_key] = []
-                        container = parent_container[last_key]
-                    else:
-                        raise ValueError("YAML format unexpected: list item without preceding key")
+                # If parent is a dict, convert the last inserted key to a list
+                parent_indent, parent_container, _ = stack[-1]
+                if isinstance(parent_container, dict) and parent_container:
+                    last_key = list(parent_container.keys())[-1]
+                    if not isinstance(parent_container[last_key], list):
+                        parent_container[last_key] = []
+                    container = parent_container[last_key]
                 else:
-                    raise ValueError("YAML format unexpected: list item in non-list container")
+                    raise ValueError("YAML format unexpected: list item without preceding key")
 
             item_content = line[1:].strip()
             if not item_content:
                 new_item: dict = {}
                 container.append(new_item)
-                stack.append((indent, new_item))
+                stack.append((indent, new_item, None))
             else:
                 container.append(_parse_scalar_from_yaml_token(item_content))
         else:
@@ -292,8 +307,9 @@ def load_simple_yaml(path: str) -> dict:
             if value_part == "":
                 if not isinstance(container, dict):
                     raise ValueError("YAML format unexpected: mapping entry inside list without '-' item")
+                # Defer type selection; create a placeholder and decide on next token
                 container[key] = {}
-                stack.append((indent, container[key]))
+                stack.append((indent, container[key], key))
             else:
                 if not isinstance(container, dict):
                     raise ValueError("YAML format unexpected: key-value inside list without '-' item")

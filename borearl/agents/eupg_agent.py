@@ -26,7 +26,8 @@ def create(
     sel_gamma = float(gamma) if gamma is not None else const.EUPG_GAMMA_DEFAULT
     sel_lr = float(learning_rate) if learning_rate is not None else const.EUPG_LEARNING_RATE_DEFAULT
     sel_arch = list(net_arch) if net_arch is not None else const.EUPG_NET_ARCH_DEFAULT
-    return EUPG(
+    # Allow tighter logging cadence if upstream supports it
+    kwargs = dict(
         env=env,
         scalarization=scalarization,
         weights=sel_weights,
@@ -37,6 +38,9 @@ def create(
         project_name="Forest-MORL" if use_wandb else "",
         experiment_name="EUPG-Forest" if use_wandb else "",
     )
+    # Some morl-baselines versions accept log_every
+    kwargs["log_every"] = int(100)
+    return EUPG(**kwargs)
 
 
 def default_model_filename() -> str:
