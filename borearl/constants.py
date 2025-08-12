@@ -38,7 +38,7 @@ MAX_DROUGHT_INDEX = 100.0
 MAX_DENSITY_CHANGE = float(max(abs(x) for x in DENSITY_ACTIONS))
 
 # Asymmetric thaw reward
-WARMING_PENALTY_FACTOR = 3.0
+WARMING_PENALTY_FACTOR = 5.0
 
 # HWP sales reward
 MAX_HWP_SALES_PER_YEAR = 1.0
@@ -62,7 +62,7 @@ SAFE_MIN_DENSITY_THINNING = 150
 
 # Reward normalization constants
 MAX_CARBON_CHANGE_PER_YEAR = 2.0
-MAX_THAW_DEGREE_DAYS_PER_YEAR = 2.0
+MAX_THAW_DEGREE_DAYS_PER_YEAR = 40.0
 
 # Reward standardization defaults
 # Set to False to log non-standardized rewards by default while keeping the
@@ -198,10 +198,10 @@ EVAL_USE_ARGMAX_ACTIONS = False
 # physics_backend: 'python' (default) or 'numba'
 PHYSICS_BACKEND_DEFAULT = 'numba'
 # Fast mode reduces time resolution and iterations for speed during training
-FAST_MODE_DEFAULT = False
+FAST_MODE_DEFAULT = True
 # Default JIT solver iterations (used only when backend is 'numba')
-JIT_SOLVER_MAX_ITERS_DEFAULT = 6
+JIT_SOLVER_MAX_ITERS_DEFAULT = 4
 # Update atmospheric stability every N sub-steps (>=1)
-STABILITY_UPDATE_INTERVAL_STEPS_DEFAULT = 1
+STABILITY_UPDATE_INTERVAL_STEPS_DEFAULT = 3
 
 

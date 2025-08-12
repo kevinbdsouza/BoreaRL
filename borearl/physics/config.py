@@ -19,7 +19,7 @@ def get_model_config() -> Dict[str, Any]:
         Lv=2.5e6,
         Lf=3.34e5,
         EPS=np.finfo(float).eps,
-        TIME_STEP_MINUTES=120,
+        TIME_STEP_MINUTES=240,
         C_CANOPY_LEAF_OFF=2.0e4,
         C_CANOPY_LEAF_ON=8.0e4,
         C_TRUNK=5.0e5,
