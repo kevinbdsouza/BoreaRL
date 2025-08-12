@@ -26,14 +26,14 @@ AGENT_ARG=${1:-${AGENT:-eupg}}
 RUN_DIR_NAME=${2:-${RUN_DIR:-}} 
 python main.py --train_then_eval --timesteps 200000 --eval_episodes 100 --agent ${AGENT_ARG} ${RUN_DIR_NAME:+--run_dir_name ${RUN_DIR_NAME}}
 
-# Check if training was successfu
+# Check if training was successful
 if [ $? -ne 0 ]; then
     echo "Error: Training failed. Exiting."
     exit 1
 fi
 
 echo "Training completed successfully!"
-echo "Model saved as: ${MODEL_FILE} (if supported by the selected agent)"
+# Model path is determined automatically during evaluation based on `--run_dir_name` and agent default filename
 echo ""
 
 echo "=== COMPLETED ==="

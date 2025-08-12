@@ -74,10 +74,12 @@ Tip: keep all project commands inside the `.venv` virtual environment.
 ## Quickstart
 ### Train a MORL agent (EUPG)
 ```bash
-python main.py --train --timesteps 500000
+python main.py --train --timesteps 200 --agent eupg --run_dir_name temp
 ```
-Flags:
-- `--timesteps`: training timesteps (default 500000)
+Flags (see more below):
+- `--timesteps`: training timesteps (default 100000)
+- `--agent`: MORL algorithm to use (default: first available; typically `eupg`)
+- `--run_dir_name`: directory name under `logs/` for artifacts
 - `--no_wandb`: disable Weights & Biases logging
 
 Alternatively, import the environment directly:
@@ -89,9 +91,20 @@ env = gym.make("ForestEnv-v0", disable_env_checker=True)
 
 ### Evaluate a trained agent across preferences
 ```bash
-python main.py --evaluate --model_path models/eupg_forest_manager.pth --eval_episodes 100
+python main.py --evaluate --eval_episodes 100 --agent eupg --run_dir_name temp
 ```
-Outputs a Pareto front plot `plots/morl_pareto_front.png` and summary stats.
+Evaluation auto-loads the model from `logs/<run_dir_name>/` using the agent's default filename. Outputs a Pareto front plot `plots/morl_pareto_front.png` and summary stats.
+
+### Common CLI flags
+- `--agent {eupg, pcn, chm, gpi_ls}`: algorithm to run (choices depend on installed optional deps)
+- `--timesteps <int>`: training timesteps (default 100000)
+- `--eval_episodes <int>`: episodes per preference during evaluation (default 100)
+- `--run_dir_name <str>`: base directory under `logs/` for this run; if omitted, a timestamped `run_id` is used
+- `--site_specific`: enable site-specific mode (fixed weather seed, deterministic temp noise, no age jitter)
+- `--no_wandb`: disable Weights & Biases logging
+- `--train_then_eval`: train and immediately evaluate in the same run
+- `--baseline`: run baselines/counterfactual analysis and exit
+- `--plot_profile <path>`: plot saved profiling JSON interactively
 
 ### Standalone physics sanity check
 ```python
