@@ -53,6 +53,23 @@ def yaml_dump(obj: Any, indent: int = 0) -> list[str]:
 
 
 def make_env(env_config: dict | None = None):
+    # Inject backend defaults if caller did not specify
+    if env_config is None:
+        env_config = {}
+    else:
+        env_config = dict(env_config)
+    import os as _os
+    # Allow environment variables to override defaults
+    backend_env = _os.environ.get('BOREARL_PHYSICS_BACKEND')
+    fast_mode_env = _os.environ.get('BOREARL_FAST_MODE')
+    jit_iters_env = _os.environ.get('BOREARL_JIT_SOLVER_MAX_ITERS')
+    stab_interval_env = _os.environ.get('BOREARL_STABILITY_UPDATE_INTERVAL_STEPS')
+
+    env_config.setdefault('physics_backend', backend_env or const.PHYSICS_BACKEND_DEFAULT)
+    env_config.setdefault('fast_mode', (str(fast_mode_env).lower() in ('1', 'true', 'yes')) if fast_mode_env is not None else const.FAST_MODE_DEFAULT)
+    if env_config.get('physics_backend', const.PHYSICS_BACKEND_DEFAULT) == 'numba':
+        env_config.setdefault('jit_solver_max_iters', int(jit_iters_env) if jit_iters_env else const.JIT_SOLVER_MAX_ITERS_DEFAULT)
+        env_config.setdefault('stability_update_interval_steps', int(stab_interval_env) if stab_interval_env else const.STABILITY_UPDATE_INTERVAL_STEPS_DEFAULT)
     return gym.make("ForestEnv-v0", config=env_config, disable_env_checker=True)
 
 
@@ -70,7 +87,29 @@ def set_env_preference(env, pref: float):
 
 
 def save_run_config(env, agent_name: str, model: Any, total_timesteps: int):
-    unwrapped = getattr(env, 'unwrapped', env)
+    # If a vectorized env is provided, introspect a single underlying env instance
+    unwrapped = env
+    try:
+        # MOSyncVectorEnv API: has attribute env_fns or get_attr
+        if hasattr(env, 'get_attr'):
+            # Try to fetch attribute from the first sub-env
+            vals = env.get_attr('eupg_default_weights')
+            if isinstance(vals, (list, tuple)) and len(vals) > 0:
+                sentinel_weights = vals[0]
+            else:
+                sentinel_weights = None
+            # Grab a single real env for shape/introspection if needed
+            try:
+                first_envs = env.get_attr('observation_space')
+                if first_envs:
+                    unwrapped = env
+            except Exception:
+                pass
+        # Fallback to unwrapped attribute for single env
+        if hasattr(unwrapped, 'unwrapped'):
+            unwrapped = unwrapped.unwrapped
+    except Exception:
+        unwrapped = getattr(env, 'unwrapped', env)
     env_conf = {
         'site_specific': bool(getattr(unwrapped, 'site_specific', False)),
         'include_site_params_in_obs': bool(getattr(unwrapped, 'include_site_params_in_obs', False)),
@@ -87,7 +126,7 @@ def save_run_config(env, agent_name: str, model: Any, total_timesteps: int):
         'csv_output_dir': str(getattr(unwrapped, 'csv_output_dir', 'logs')),
         'use_fixed_preference': bool(getattr(unwrapped, 'use_fixed_preference', False)),
         # Load directly from env (env guarantees attribute is set in __init__)
-        'eupg_default_weights': list(getattr(unwrapped, 'eupg_default_weights')),
+        'eupg_default_weights': list(getattr(unwrapped, 'eupg_default_weights', const.EUPG_DEFAULT_WEIGHTS)),
     }
     if bool(getattr(unwrapped, 'site_specific', False)):
         env_conf['site_overrides'] = dict(getattr(unwrapped, 'site_overrides', {}))

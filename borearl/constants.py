@@ -101,7 +101,7 @@ SITE_WEATHER_SEED_DEFAULT = 123456
 
 INCLUDE_SITE_PARAMS_IN_OBS_DEFAULT = True  # Generalist-only observation augmentation
 
-USE_FIXED_SITE_INITIALS_DEFAULT = True   # If True, use fixed site defaults for initial state instead of sampling ranges
+USE_FIXED_SITE_INITIALS_DEFAULT = False   # If True, use fixed site defaults for initial state instead of sampling ranges
 
 # Default site parameter overrides (midpoints of physics ranges)
 # These are applied in site-specific mode if no explicit overrides are provided.
@@ -193,5 +193,15 @@ COUNTERFACTUAL_PREF_DEFAULT = 0.5
 # If True, actions during evaluation are selected via argmax over logits (greedy).
 # If False, actions are sampled from the categorical distribution defined by logits.
 EVAL_USE_ARGMAX_ACTIONS = False
+
+# Physics backend defaults
+# physics_backend: 'python' (default) or 'numba'
+PHYSICS_BACKEND_DEFAULT = 'numba'
+# Fast mode reduces time resolution and iterations for speed during training
+FAST_MODE_DEFAULT = False
+# Default JIT solver iterations (used only when backend is 'numba')
+JIT_SOLVER_MAX_ITERS_DEFAULT = 6
+# Update atmospheric stability every N sub-steps (>=1)
+STABILITY_UPDATE_INTERVAL_STEPS_DEFAULT = 1
 
 

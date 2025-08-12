@@ -130,8 +130,29 @@ def train(
 
     # Mark phase for downstream logging hooks before creating env so filenames are set correctly
     os.environ["BOREARL_PHASE"] = "train"
-    env = make_env(env_config)
-    unwrapped_env = getattr(env, 'unwrapped', env)
+    # Optional vectorized training envs (disabled for some algorithms)
+    num_envs = 1
+    try:
+        num_envs = max(1, int(os.environ.get('BOREARL_NUM_ENVS', '1')))
+    except Exception:
+        num_envs = 1
+    # EUPG from morl-baselines expects non-vectorized envs; enforce single env
+    if algo_key == 'eupg':
+        num_envs = 1
+    if num_envs > 1:
+        # Build a sample env for configuration/introspection
+        sample_env = make_env(env_config)
+        sample_unwrapped = getattr(sample_env, 'unwrapped', sample_env)
+        try:
+            env = MOSyncVectorEnv([lambda: make_env(env_config) for _ in range(num_envs)])
+        except Exception:
+            # Fallback to single env if vectorization unsupported
+            env = make_env(env_config)
+            num_envs = 1
+        unwrapped_env = sample_unwrapped
+    else:
+        env = make_env(env_config)
+        unwrapped_env = getattr(env, 'unwrapped', env)
 
     # Save preliminary config for fresh runs only (do not overwrite when resuming)
     if not resume_mode:
@@ -251,6 +272,10 @@ def train(
     # Save profiling plots without blocking
     plot_profiling_statistics(profiling_data_file, show=False)
 
+    try:
+        env.close()
+    except Exception:
+        pass
     return {"run_dir": run_dir, "model_path": saved_model_path}
 
 
@@ -422,11 +447,18 @@ def evaluate(
     eval_weights = default_eval_weights(env_config)
 
     results = {'weights': [], 'carbon_objectives': [], 'thaw_objectives': [], 'scalarized_rewards': []}
+    # Parallel list to results['weights'] holding averaged baseline metrics per weight
+    baseline_means_per_weight: list[dict] = []
 
     try:
         episodes_per_weight = int(n_eval_episodes)
         
         for weight_idx, weight in enumerate(eval_weights, start=1):
+            # Accumulators for baseline metrics across episodes for this weight
+            baseline_buffers = {
+                'zero': {'carbon': [], 'thaw': [], 'scalarized': []},
+                'plus': {'carbon': [], 'thaw': [], 'scalarized': []},
+            }
             carbon_rewards, thaw_rewards, scalarized_rewards = [], [], []
             episodes_for_this_weight = episodes_per_weight
             # Determine evaluation mode
@@ -492,21 +524,34 @@ def evaluate(
                 # Generalist mode: run per episode to match varying seeds.
                 # Site-specific mode: skip here; will run once per weight after loop.
                 if not site_specific_run:
-                    _ = run_baseline_pair_for_seed(
+                    b = run_baseline_pair_for_seed(
                         env_config=env_config,
                         seed=per_episode_seed,
                         fixed_preference=float(weight[0]),
                         output_dir=str(getattr(unwrapped_env, 'csv_output_dir', run_dir) or run_dir),
                     )
+                    # Aggregate baseline results per episode for this weight
+                    baseline_buffers['zero']['carbon'].append(float(b['zero_density']['carbon']))
+                    baseline_buffers['zero']['thaw'].append(float(b['zero_density']['thaw']))
+                    baseline_buffers['zero']['scalarized'].append(float(b['zero_density']['scalarized']))
+                    baseline_buffers['plus']['carbon'].append(float(b['+100_density_0p5mix']['carbon']))
+                    baseline_buffers['plus']['thaw'].append(float(b['+100_density_0p5mix']['thaw']))
+                    baseline_buffers['plus']['scalarized'].append(float(b['+100_density_0p5mix']['scalarized']))
                         
             # Site-specific mode: run baseline once per weight (identical across episodes)
             if site_specific_run:
-                _ = run_baseline_pair_for_seed(
+                b = run_baseline_pair_for_seed(
                     env_config=env_config,
                     seed=first_episode_seed,
                     fixed_preference=float(weight[0]),
                     output_dir=str(getattr(unwrapped_env, 'csv_output_dir', run_dir) or run_dir),
                 )
+                baseline_buffers['zero']['carbon'].append(float(b['zero_density']['carbon']))
+                baseline_buffers['zero']['thaw'].append(float(b['zero_density']['thaw']))
+                baseline_buffers['zero']['scalarized'].append(float(b['zero_density']['scalarized']))
+                baseline_buffers['plus']['carbon'].append(float(b['+100_density_0p5mix']['carbon']))
+                baseline_buffers['plus']['thaw'].append(float(b['+100_density_0p5mix']['thaw']))
+                baseline_buffers['plus']['scalarized'].append(float(b['+100_density_0p5mix']['scalarized']))
 
             # Record aggregated results for this weight if any episodes were completed
             if len(carbon_rewards) > 0:
@@ -517,6 +562,21 @@ def evaluate(
                 results['carbon_objectives'].append(mean_carbon)
                 results['thaw_objectives'].append(mean_thaw)
                 results['scalarized_rewards'].append(mean_scalarized)
+                # Compute averaged baseline metrics for this weight
+                def _avg(vals: list[float]) -> float:
+                    return float(np.mean(vals)) if len(vals) > 0 else 0.0
+                baseline_means_per_weight.append({
+                    'zero': {
+                        'carbon': _avg(baseline_buffers['zero']['carbon']),
+                        'thaw': _avg(baseline_buffers['zero']['thaw']),
+                        'scalarized': _avg(baseline_buffers['zero']['scalarized']),
+                    },
+                    'plus': {
+                        'carbon': _avg(baseline_buffers['plus']['carbon']),
+                        'thaw': _avg(baseline_buffers['plus']['thaw']),
+                        'scalarized': _avg(baseline_buffers['plus']['scalarized']),
+                    },
+                })
     finally:
         try:
             venv.close()
@@ -533,6 +593,25 @@ def evaluate(
         for w, c, t, s in zip(results['weights'], results['carbon_objectives'], results['thaw_objectives'], results['scalarized_rewards']):
             writer.writerow([float(w[0]), float(w[1]), float(c), float(t), float(s)])
     print(f"Evaluation summary saved to '{eval_csv_path}'")
+
+    # Save a baseline summary CSV with averaged baseline rewards per weight
+    baseline_csv_path = os.path.join(output_dir, f"baseline_summary_{run_id}.csv")
+    with open(baseline_csv_path, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            "weight_carbon", "weight_thaw",
+            "zero_carbon", "zero_thaw", "zero_scalarized",
+            "plus100_carbon", "plus100_thaw", "plus100_scalarized",
+        ])
+        for w, bm in zip(results['weights'], baseline_means_per_weight):
+            z = bm.get('zero', {})
+            p = bm.get('plus', {})
+            writer.writerow([
+                float(w[0]), float(w[1]),
+                float(z.get('carbon', 0.0)), float(z.get('thaw', 0.0)), float(z.get('scalarized', 0.0)),
+                float(p.get('carbon', 0.0)), float(p.get('thaw', 0.0)), float(p.get('scalarized', 0.0)),
+            ])
+    print(f"Baseline summary saved to '{baseline_csv_path}'")
 
     # Finish the W&B run after evaluation is complete
     if use_wandb:

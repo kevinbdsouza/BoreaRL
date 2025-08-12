@@ -19,6 +19,7 @@ from .weather import (
 )
 from .demography import calculate_natural_demography
 from .utils import safe_update
+from .jit_core import have_numba, solve_canopy_energy_balance_nb
 
 
 def calculate_age_weighted_stand_attributes(age_distribution: dict, p: dict, 
@@ -224,7 +225,27 @@ def calculate_fluxes_and_melt(S: Dict, p: Dict) -> Tuple[Dict, float, float, flo
     Q_solar_on_canopy = p['Q_solar'] * p['A_can_max']
     Q_abs_can = Q_solar_on_canopy * (1 - p['K_can']) * (1 - p['alpha_can'])
     forcings = {'Q_abs_can': Q_abs_can, 'L_down_atm': L_down_atm, 'L_up_ground': L_up_ground, 'T_trunk': T_trunk, 'T_air': T_air_model, 'ea': p['ea'], 'soil_stress': p['soil_stress'], 'evap_intercepted_rain_flux': p['evap_intercepted_rain_flux']}
-    T_can_step, can_flux, gpp_g_m2_s = solve_canopy_energy_balance(T_can_guess, p, forcings, {'h_can': p['h_can']}, S['SWE_can'])
+    # Select backend for canopy energy balance
+    use_jit_backend = bool(p.get('USE_JIT', False)) and have_numba
+    solver_max_iters = int(p.get('SOLVER_MAX_ITERS', 6))
+    if use_jit_backend:
+        T_can_step, Rn_c, H_c, LE_c, G_photo_c, Cnd_c, melt_c, _le_int, gpp_g_m2_s = solve_canopy_energy_balance_nb(
+            T_can_guess,
+            p['eps_can'], p['A_can'], p['h_can'], p['k_ct'], p['A_c2t'], p['d_ct'],
+            p['PT_ALPHA'], p['LAI_actual'], p['LUE_J_TO_G_C'], p['PAR_FRACTION'], p['SIGMA'], p['Lv'], p['DT_SECONDS'],
+            p['soil_stress'], Q_abs_can, L_down_atm, L_up_ground, T_trunk, T_air_model, p['ea'], S['SWE_can'], p['Lf'], p['RHO_WATER'], solver_max_iters, p['evap_intercepted_rain_flux']
+        )
+        can_flux = {
+            'Rnet_can': Rn_c,
+            'H_can': H_c,
+            'LE_can': LE_c,
+            'G_photo_energy': G_photo_c,
+            'Cnd_can': Cnd_c,
+            'Melt_flux_can': melt_c,
+            'LE_int_rain': p['evap_intercepted_rain_flux'],
+        }
+    else:
+        T_can_step, can_flux, gpp_g_m2_s = solve_canopy_energy_balance(T_can_guess, p, forcings, {'h_can': p['h_can']}, S['SWE_can'])
     flux_report['canopy'] = {'Rnet': can_flux['Rnet_can'], 'H': can_flux['H_can'], 'LE_trans': can_flux['LE_can'], 'G_photo': can_flux.get('G_photo_energy', 0.0), 'Cnd_trunk': can_flux['Cnd_can'], 'Melt': -can_flux.get('Melt_flux_can', 0.0), 'LE_int_rain': -can_flux.get('LE_int_rain', 0.0)}
     Q_transmitted = Q_solar_on_canopy * p['K_can']
     Q_ground = p['Q_solar'] * (1 - p['A_can_max']) + Q_transmitted
@@ -300,6 +321,10 @@ class ForestSimulator:
         site_overrides: dict | None = None,
         deterministic_temp_noise: bool = False,
         remove_age_jitter: bool = False,
+        physics_backend: str = 'python',
+        fast_mode: bool = False,
+        jit_solver_max_iters: int | None = None,
+        stability_update_interval_steps: int | None = None,
     ):
         self.rng = np.random.default_rng(weather_seed)
         self.site_specific = site_specific
@@ -308,11 +333,26 @@ class ForestSimulator:
         self.remove_age_jitter = remove_age_jitter
 
         self.config = get_model_config()
+        # Backend and fast-mode options
+        self.backend = str(physics_backend or 'python').lower()
+        self.fast_mode = bool(fast_mode)
+        self.use_jit = (self.backend == 'numba') and have_numba
+        # Configure timestep for fast mode
+        if self.fast_mode:
+            try:
+                self.config['TIME_STEP_MINUTES'] = 360
+            except Exception:
+                pass
+        self.solver_max_iters = int(jit_solver_max_iters) if jit_solver_max_iters is not None else (3 if self.fast_mode else 6)
+        self.stability_update_interval_steps = int(stability_update_interval_steps) if stability_update_interval_steps is not None else (4 if self.fast_mode else 1)
         self.p = self._sample_parameters()
         # Force deterministic daily temperature noise if requested
         if self.deterministic_temp_noise:
             self.p['T_daily_noise_std'] = 0.0
         self.p = get_baseline_parameters(self.p, coniferous_fraction, stem_density, self.rng)
+        # Propagate backend flags into parameter dict for downstream kernels
+        self.p['USE_JIT'] = self.use_jit
+        self.p['SOLVER_MAX_ITERS'] = self.solver_max_iters
         self.S = {
             "canopy": 265.0, "trunk": 265.0, "snow": 268.0, "soil_surf": 270.0,
             "soil_deep": 270.0, "atm_model": 265.0, "SWE": 0.0, "SWE_can": 0.0,
@@ -673,6 +713,7 @@ class ForestSimulator:
             "atm_model": self.p['C_ATM'], "soil_surf": self.p['C_SOIL_TOTAL'] * 0.15, "soil_deep": self.p['C_SOIL_TOTAL'] * 0.85,
         }
         temp_nodes = [n for n in self.S if 'SWE' not in n and 'SWC' not in n]
+        step_counter = 0
         for day in range(1, 366):
             fall_start = self.p['fall_day'] - 10
             fall_end = self.p['fall_day'] + 20
@@ -710,6 +751,7 @@ class ForestSimulator:
                 self.p = update_dynamic_parameters(self.p, day, hour, self.S, self.L_stability, self.rng)
                 heat_caps['canopy'] = self.p['C_CANOPY_LEAF_ON'] if self.p['LAI_actual'] > 0.1 else self.p['C_CANOPY_LEAF_OFF']
                 flux, dSWE_g, dSWE_c, gpp_g_m2_s = calculate_fluxes_and_melt(self.S, self.p)
+                # When using JIT canopy solver, gpp_g_m2_s is encoded via energy flux; recompute if missing
                 gpp_kg_m2_step = gpp_g_m2_s * 1e-3 * self.p['DT_SECONDS']
                 total_gpp_kg_m2 += gpp_kg_m2_step
                 r_auto_kg_m2_yr = (self.p['R_BASE_KG_M2_YR'] * (dynamic_biomass_carbon_kg_m2 / self.p['RESPIRATION_BIOMASS_SIZE_SCALAR_kg_m2']) * self.p['Q10'] ** ((self.S['soil_surf'] - self.p['T_REF_K']) / 10.0))
@@ -749,16 +791,19 @@ class ForestSimulator:
                     positive_flux_sum += thaw_temp_equivalent * timestep_duration_days
                 else:
                     negative_flux_sum += abs(thaw_temp_equivalent) * timestep_duration_days
-                H_total = sum(flux['atm_model'].get(k, 0.0) for k in ['H_can', 'H_trunk', 'H_soil', 'H_snow'])
-                if abs(H_total) > 1e-3:
-                    u = self.p['u_ref']
-                    psi_m, _ = get_stability_correction(self.p['z_ref_h'], self.L_stability)
-                    u_star_log_term = np.log(self.p['z_ref_h'] / self.p['z0_can']) - psi_m
-                    u_star = u * self.p['KAPPA'] / u_star_log_term if u_star_log_term > 0 else 0.1
-                    L_den = self.p['KAPPA'] * self.p['G_ACCEL'] * H_total
-                    self.L_stability = -self.p['RHO_AIR'] * self.p['CP_AIR'] * (u_star**3) * self.p['T_atm'] / L_den if abs(L_den) > 1e-9 else 1e6
-                else:
-                    self.L_stability = 1e6
+                # Throttle stability updates to reduce overhead
+                if (step_counter % max(1, self.stability_update_interval_steps)) == 0:
+                    H_total = sum(flux['atm_model'].get(k, 0.0) for k in ['H_can', 'H_trunk', 'H_soil', 'H_snow'])
+                    if abs(H_total) > 1e-3:
+                        u = self.p['u_ref']
+                        psi_m, _ = get_stability_correction(self.p['z_ref_h'], self.L_stability)
+                        u_star_log_term = np.log(self.p['z_ref_h'] / self.p['z0_can']) - psi_m
+                        u_star = u * self.p['KAPPA'] / u_star_log_term if u_star_log_term > 0 else 0.1
+                        L_den = self.p['KAPPA'] * self.p['G_ACCEL'] * H_total
+                        self.L_stability = -self.p['RHO_AIR'] * self.p['CP_AIR'] * (u_star**3) * self.p['T_atm'] / L_den if abs(L_den) > 1e-9 else 1e6
+                    else:
+                        self.L_stability = 1e6
+                step_counter += 1
         npp = total_gpp_kg_m2 - total_autotrophic_resp_kg_m2
         mortality_stems, recruitment_stems = calculate_natural_demography(
             current_density=new_stem_density,
