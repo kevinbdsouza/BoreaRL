@@ -543,10 +543,6 @@ class ForestEnv(gym.Env):
             self._weather_seed_used = self.site_weather_seed
         else:
             self._weather_seed_used = int(self.np_random.integers(0, 2**31 - 1))
-        backend = str(self.config.get('physics_backend', 'python')).lower()
-        fast_mode = bool(self.config.get('fast_mode', False))
-        jit_solver_max_iters = self.config.get('jit_solver_max_iters', None)
-        stability_update_interval_steps = self.config.get('stability_update_interval_steps', None)
         self.simulator = ebm.ForestSimulator(
             coniferous_fraction=self.conifer_fraction,
             stem_density=self.stem_density,
@@ -555,10 +551,6 @@ class ForestEnv(gym.Env):
             site_overrides=self.site_overrides,
             deterministic_temp_noise=self.deterministic_temp_noise,
             remove_age_jitter=self.remove_age_jitter,
-            physics_backend=backend,
-            fast_mode=fast_mode,
-            jit_solver_max_iters=jit_solver_max_iters,
-            stability_update_interval_steps=stability_update_interval_steps,
         )
 
         if getattr(self, 'use_fixed_preference'):
