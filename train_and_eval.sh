@@ -2,6 +2,16 @@
 
 # Forest Energy Balance - Training and Evaluation Script
 # This script trains a MORL agent and then evaluates it across different preference weights
+#
+# Usage: ./train_and_eval.sh [agent] [run_dir_name] [save_interval]
+#   agent: Agent type (default: eupg)
+#   run_dir_name: Optional run directory name
+#   save_interval: Save model every N episodes (default: 100)
+#
+# Environment variables:
+#   AGENT: Agent type (default: eupg)
+#   RUN_DIR: Run directory name
+#   SAVE_INTERVAL: Save model every N episodes (default: 100)
 
 echo "=== Forest Energy Balance MORL Training and Evaluation ==="
 echo "Starting at: $(date)"
@@ -24,7 +34,9 @@ echo ""
 AGENT_ARG=${1:-${AGENT:-eupg}}
 # Optional run directory name from env RUN_DIR or 2nd arg
 RUN_DIR_NAME=${2:-${RUN_DIR:-}} 
-python main.py --train_then_eval --timesteps 200000 --eval_episodes 100 --agent ${AGENT_ARG} ${RUN_DIR_NAME:+--run_dir_name ${RUN_DIR_NAME}}
+# Optional save interval from env SAVE_INTERVAL or 3rd arg (default: 100)
+SAVE_INTERVAL=${3:-${SAVE_INTERVAL:-100}}
+python main.py --train_then_eval --site_specific --timesteps 400000 --eval_episodes 100 --agent ${AGENT_ARG} --save_interval ${SAVE_INTERVAL} ${RUN_DIR_NAME:+--run_dir_name ${RUN_DIR_NAME}}
 
 # Check if training was successfu
 if [ $? -ne 0 ]; then

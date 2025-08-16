@@ -47,7 +47,7 @@ HWP_SALE_REWARD_MULTIPLIER = 0.0
 
 # Ineffective action penalties
 INEFFECTIVE_THINNING_PENALTY = 0.5
-INEFFECTIVE_PLANTING_PENALTY = 0.5
+INEFFECTIVE_PLANTING_PENALTY = 1.0
 
 # Carbon stock limits (RL-level for penalties; hard caps enforced in simulator diag only)
 MAX_BIOMASS_CARBON_LIMIT = 15.0
@@ -55,7 +55,7 @@ MAX_SOIL_CARBON_LIMIT = 20.0
 CARBON_LIMIT_PENALTY = 0.5
 
 # Density penalties
-MAX_DENSITY_PENALTY = 0.5
+MAX_DENSITY_PENALTY = 1.0
 
 # Thinning floor to avoid unrealistic collapses but still allow learning
 SAFE_MIN_DENSITY_THINNING = 150
@@ -74,14 +74,14 @@ REWARD_EMA_BETA_DEFAULT = 0.99
 STOCK_BONUS_MULTIPLIER = 0.0
 
 # Default ESR/EUPG scalarization weights (used for logging/eval defaults)
-EUPG_DEFAULT_WEIGHTS = (1.0, 0.0)
+EUPG_DEFAULT_WEIGHTS = (0.5, 0.5)
 
 # Preference selection behavior for episodes
 # When True, the environment will use the fixed preference vector in
 # `EUPG_DEFAULT_WEIGHTS` for every episode instead of randomizing a
 # new preference weight. The scalar preference weight used is the
 # first element of `EUPG_DEFAULT_WEIGHTS`.
-USE_FIXED_PREFERENCE_DEFAULT = True
+USE_FIXED_PREFERENCE_DEFAULT = False
 
 # EUPG hyperparameter defaults
 EUPG_GAMMA_DEFAULT = 1
@@ -99,9 +99,9 @@ INITIAL_SOIL_CARBON_RANGE = (2.0, 10.0)  # kg C/m²
 # and age jitter toggles default to the site-specific flag within the environment.
 SITE_WEATHER_SEED_DEFAULT = 123456
 
-INCLUDE_SITE_PARAMS_IN_OBS_DEFAULT = True  # Generalist-only observation augmentation
+INCLUDE_SITE_PARAMS_IN_OBS_DEFAULT = False  # Generalist-only observation augmentation
 
-USE_FIXED_SITE_INITIALS_DEFAULT = False   # If True, use fixed site defaults for initial state instead of sampling ranges
+USE_FIXED_SITE_INITIALS_DEFAULT = True   # If True, use fixed site defaults for initial state instead of sampling ranges
 
 # Default site parameter overrides (midpoints of physics ranges)
 # These are applied in site-specific mode if no explicit overrides are provided.

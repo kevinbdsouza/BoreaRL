@@ -339,6 +339,7 @@ class ForestEnv(gym.Env):
             'avg_stem_density', 'avg_conifer_fraction',
             'net_carbon_gain', 'carbon_efficiency',
             'total_positive_flux', 'total_negative_flux',
+            'preference_weight', 'baseline_type',
         ]
         with open(self.step_csv_path, 'w', newline='') as f:
             csv.writer(f).writerow(step_headers)
@@ -461,6 +462,7 @@ class ForestEnv(gym.Env):
                     'avg_stem_density', 'avg_conifer_fraction',
                     'net_carbon_gain', 'carbon_efficiency',
                     'total_positive_flux', 'total_negative_flux',
+                    'preference_weight', 'baseline_type',
                 ])
         row = [
             stats['episode_number'], stats['total_steps'],
@@ -474,6 +476,8 @@ class ForestEnv(gym.Env):
             stats['avg_stem_density'], stats['avg_conifer_fraction'],
             stats['net_carbon_gain'], stats['carbon_efficiency'],
             stats['total_positive_flux'], stats['total_negative_flux'],
+            float(getattr(self, 'current_preference_weight', 0.0)),
+            str(getattr(self, 'baseline_type', '')),
         ]
         with open(self.episode_csv_path, 'a', newline='') as f:
             csv.writer(f).writerow(row)
@@ -484,7 +488,7 @@ class ForestEnv(gym.Env):
         self._in_reset = True
         super().reset(seed=seed)
         self.episode_count += 1
-        print(f"\n=== Starting Episode {self.episode_count} ===")
+        print(f"Episode {self.episode_count} started")
         self.current_episode_rewards = []
         self.current_episode_carbon_rewards = []
         self.current_episode_thaw_rewards = []
@@ -569,20 +573,13 @@ class ForestEnv(gym.Env):
             # choose first weight from configured default weights
             w0 = float(getattr(self, 'eupg_default_weights')[0])
             self.current_preference_weight = w0
-            print(f"  Preference weight fixed from constants: {self.current_preference_weight:.3f}")
         elif options and 'preference' in options:
             self.current_preference_weight = options['preference'][0]
-            print(f"  Preference weight set from options: {self.current_preference_weight:.3f}")
-        elif not self._preference_was_set_externally:
-            self.current_preference_weight = self.np_random.random()
-            print(f"  Preference weight randomized: {self.current_preference_weight:.3f}")
+        elif self._preference_was_set_externally:
+            # Keep the externally set preference weight (for evaluation)
+            pass
         else:
-            print(f"  Preference weight kept from external setting: {self.current_preference_weight:.3f}")
-
-        print(f"  Initial density: {self.stem_density} stems/ha")
-        print(f"  Initial conifer fraction: {self.conifer_fraction:.2f}")
-        print(f"  Initial biomass carbon: {self.biomass_carbon_kg_m2:.1f} kg C/m²")
-        print(f"  Initial soil carbon: {self.soil_carbon_kg_m2:.1f} kg C/m²")
+            self.current_preference_weight = self.np_random.random()
 
         delattr(self, '_in_reset')
         return self._get_obs(), self._get_info()
@@ -787,21 +784,6 @@ class ForestEnv(gym.Env):
                     self.last_planting_penalty = planting_penalty
             profiler.end_timer('reward_calculation')
 
-            profiler.start_timer('episode_tracking')
-            self.current_episode_rewards.append(reward_vector)
-            self.current_episode_carbon_rewards.append(reward_vector[0])
-            self.current_episode_thaw_rewards.append(raw_thaw_component)
-            self.current_episode_actions.append(action)
-            self.current_episode_states.append({
-                'year': self.year,
-                'stem_density': self.stem_density,
-                'conifer_fraction': self.conifer_fraction,
-                'biomass_carbon': self.biomass_carbon_kg_m2,
-                'soil_carbon': self.soil_carbon_kg_m2,
-                'total_carbon': self.biomass_carbon_kg_m2 + self.soil_carbon_kg_m2,
-            })
-            profiler.end_timer('episode_tracking')
-
             profiler.start_timer('termination_checks')
             self.year += 1
             truncated = self.year >= self.EPISODE_LENGTH_YEARS
@@ -825,11 +807,24 @@ class ForestEnv(gym.Env):
                 reward_vector += np.array([-1.0, -1.0])
             profiler.end_timer('termination_checks')
 
+            profiler.start_timer('episode_tracking')
+            self.current_episode_rewards.append(reward_vector)
+            self.current_episode_carbon_rewards.append(reward_vector[0])
+            self.current_episode_thaw_rewards.append(reward_vector[1])
+            self.current_episode_actions.append(action)
+            self.current_episode_states.append({
+                'year': self.year,
+                'stem_density': self.stem_density,
+                'conifer_fraction': self.conifer_fraction,
+                'biomass_carbon': self.biomass_carbon_kg_m2,
+                'soil_carbon': self.soil_carbon_kg_m2,
+                'total_carbon': self.biomass_carbon_kg_m2 + self.soil_carbon_kg_m2,
+            })
+            profiler.end_timer('episode_tracking')
+
             profiler.start_timer('episode_statistics')
             if terminated or truncated:
                 episode_time = profiler.end_episode()
-                print(f"Episode {self.episode_count} completed in {episode_time:.3f} seconds")
-                self._print_episode_statistics(terminated, truncated)
                 self._log_episode_metrics(terminated, truncated)
             profiler.end_timer('episode_statistics')
 
@@ -858,8 +853,8 @@ class ForestEnv(gym.Env):
         stem_densities = [state['stem_density'] for state in self.current_episode_states]
         conifer_fractions = [state['conifer_fraction'] for state in self.current_episode_states]
         # Compute total scalarized reward using the episode's preference weight
-        eupg_weights = np.array(getattr(self, 'eupg_default_weights', const.EUPG_DEFAULT_WEIGHTS))
-        pref = float(getattr(self, 'current_preference_weight', eupg_weights[0]))
+        # Use the current preference weight that was set during evaluation
+        pref = float(getattr(self, 'current_preference_weight', 0.5))
         total_scalarized_reward = float(np.sum(pref * episode_carbon_rewards + (1.0 - pref) * episode_thaw_rewards))
 
         stats = {
@@ -894,44 +889,7 @@ class ForestEnv(gym.Env):
         }
         return stats
 
-    def _print_episode_statistics(self, terminated: bool, truncated: bool):
-        if not self.current_episode_rewards:
-            return
-        episode_rewards = np.array(self.current_episode_rewards)
-        episode_carbon_rewards = np.array(self.current_episode_carbon_rewards)
-        episode_thaw_rewards = np.array(self.current_episode_thaw_rewards)
-        total_carbons = [state['total_carbon'] for state in self.current_episode_states]
-        biomass_carbons = [state['biomass_carbon'] for state in self.current_episode_states]
-        soil_carbons = [state['soil_carbon'] for state in self.current_episode_states]
-        stem_densities = [state['stem_density'] for state in self.current_episode_states]
-        conifer_fractions = [state['conifer_fraction'] for state in self.current_episode_states]
-        print(f"\n--- Episode {self.episode_count} Statistics ---")
-        print(f"Terminated: {terminated}, Truncated: {truncated}")
-        print(f"Total Steps: {len(episode_rewards)}")
-        print(f"Episode Length: {self.year} years")
-        print(f"\nReward Statistics:")
-        print(f"  Total Carbon Reward: {np.sum(episode_carbon_rewards):.3f} kg C/m²")
-        print(f"  Total Thaw Reward: {np.sum(episode_thaw_rewards):.3f} TDD")
-        print(f"  Average Carbon Reward: {np.mean(episode_carbon_rewards):.3f} kg C/m²/step")
-        print(f"  Average Thaw Reward: {np.mean(episode_thaw_rewards):.3f} TDD/step")
-        print(f"  Carbon Reward Std: {np.std(episode_carbon_rewards):.3f}")
-        print(f"  Thaw Reward Std: {np.std(episode_thaw_rewards):.3f}")
-        print(f"\nState Statistics:")
-        print(f"  Final Total Carbon: {total_carbons[-1]:.2f} kg C/m²")
-        print(f"  Final Biomass Carbon: {biomass_carbons[-1]:.2f} kg C/m²")
-        print(f"  Final Soil Carbon: {soil_carbons[-1]:.2f} kg C/m²")
-        print(f"  Final Stem Density: {stem_densities[-1]:.0f} stems/ha")
-        print(f"  Final Conifer Fraction: {conifer_fractions[-1]:.3f}")
-        print(f"  Average Total Carbon: {np.mean(total_carbons):.2f} kg C/m²")
-        print(f"  Average Biomass Carbon: {np.mean(biomass_carbons):.2f} kg C/m²")
-        print(f"  Average Soil Carbon: {np.mean(soil_carbons):.2f} kg C/m²")
-        print(f"  Average Stem Density: {np.mean(stem_densities):.0f} stems/ha")
-        print(f"  Average Conifer Fraction: {np.mean(conifer_fractions):.3f}")
-        carbon_gain = total_carbons[-1] - total_carbons[0]
-        print(f"\nPerformance Metrics:")
-        print(f"  Net Carbon Gain: {carbon_gain:.3f} kg C/m²")
-        print(f"  Carbon Efficiency: {carbon_gain/len(episode_rewards):.3f} kg C/m²/step")
-        print(f"Episode plot skipped (only generated every 1000 episodes)")
+
 
     def _normalize_param(self, key: str, value: float) -> float:
         """Normalize a simulator parameter to [0,1] using config ranges if available."""
@@ -1164,7 +1122,6 @@ class ForestEnv(gym.Env):
     def set_preference_weight(self, weight):
         self.current_preference_weight = weight
         self._preference_was_set_externally = True
-        print(f"  Preference weight set externally: {weight:.3f}")
 
     def __setattr__(self, name, value):
         if name == 'current_preference_weight':

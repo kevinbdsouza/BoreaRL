@@ -36,6 +36,7 @@ def main():
     parser.add_argument("--eval_episodes", type=int, default=100, help="Number of episodes per weight for evaluation.")
     parser.add_argument("--run_dir_name", type=str, default=None, help="Name for the central run directory under logs/. If omitted, uses the run_id timestamp.")
     parser.add_argument("--no_wandb", action="store_true", help="Disable wandb logging for both training and evaluation.")
+    parser.add_argument("--save_interval", type=int, default=100, help="Save model every N episodes during training (default: 100).")
     parser.add_argument("--plot_profile", type=str, default=None, help="Path to saved profiling JSON to plot. If omitted, plots current profiler data.")
     parser.add_argument("--baseline", action="store_true", help="Run baselines and counterfactual analysis and exit.")
     parser.add_argument("--train_then_eval", action="store_true", help="Train and then immediately evaluate in the same run.")
@@ -64,6 +65,7 @@ def main():
             site_specific=args.site_specific,
             algorithm=args.agent,
             run_dir_name=args.run_dir_name,
+            save_interval=args.save_interval,
         )
         # Resolve run directory
         run_dir = os.path.join("logs", args.run_dir_name) if args.run_dir_name else os.environ.get("BOREARL_RUN_DIR")
@@ -90,7 +92,7 @@ def main():
         results = evaluate_morl_policy(
             model_path=model_path,
             n_eval_episodes=args.eval_episodes,
-            use_wandb=not args.no_wandb,
+            use_wandb=False,  # Disable wandb for evaluation
             site_specific=args.site_specific,
             config_overrides=config_overrides,
             algorithm=args.agent,
@@ -103,6 +105,7 @@ def main():
             site_specific=args.site_specific,
             algorithm=args.agent,
             run_dir_name=args.run_dir_name,
+            save_interval=args.save_interval,
         )
     elif args.evaluate:
         # Resolve run directory
@@ -125,7 +128,7 @@ def main():
         results = evaluate_morl_policy(
             model_path=model_path,
             n_eval_episodes=args.eval_episodes,
-            use_wandb=not args.no_wandb,
+            use_wandb=False,  # Disable wandb for evaluation
             site_specific=args.site_specific,
             config_overrides=config_overrides,
             algorithm=args.agent,
@@ -136,10 +139,6 @@ def main():
 
     # Optional: quick summary
     if results:
-        print("\nWeight\t\tCarbon\t\tThaw\t\tScalarized")
-        print("-" * 50)
-        for w, c, t, s in zip(results['weights'], results['carbon_objectives'], results['thaw_objectives'], results['scalarized_rewards']):
-            print(f"[{w[0]:.1f}, {w[1]:.1f}]\t{c:.3f}\t\t{t:.3f}\t\t{s:.3f}")
         # Pareto front plot
         plots_dir = os.path.join("plots")
         os.makedirs(plots_dir, exist_ok=True)

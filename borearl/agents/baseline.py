@@ -43,6 +43,8 @@ def _rollout_fixed_action(env, action_index: int, fixed_preference: float, seed:
             'carbon': carb,
             'thaw': thaw,
             'scalarized': float(fixed_preference * carb + (1.0 - fixed_preference) * thaw),
+            'preference_weight': float(fixed_preference),
+            'baseline_type': str(getattr(env.unwrapped, 'baseline_type', '')),
         })
         total_carb += carb
         total_thaw += thaw
@@ -179,20 +181,28 @@ def run_baselines(output_dir: str = 'logs', fixed_preference: float = 0.5):
             os.environ.pop('BOREARL_PHASE', None)
     # Zero density baseline (conifer mix irrelevant; choose 0.5)
     zero_action = _select_action_index(env.unwrapped, 0, 0.5)
+    try:
+        setattr(env.unwrapped, 'baseline_type', 'zero')
+    except Exception:
+        pass
     z_c, z_t, z_rows = _rollout_fixed_action(env, zero_action, fixed_preference)
     z_path = os.path.join(output_dir, 'baseline_zero_density.csv')
     with open(z_path, 'w', newline='') as f:
-        w = csv.DictWriter(f, fieldnames=['step','action','carbon','thaw','scalarized'])
+        w = csv.DictWriter(f, fieldnames=['step','action','carbon','thaw','scalarized','preference_weight','baseline_type'])
         w.writeheader()
         w.writerows(z_rows)
     print(f"Saved zero-density baseline to '{z_path}' (totals: carbon={z_c:.3f}, thaw={z_t:.3f})")
 
     # +100 density with 0.5 species mix baseline
     plus_action = _select_action_index(env.unwrapped, 100, 0.5)
+    try:
+        setattr(env.unwrapped, 'baseline_type', 'plus100_0p5mix')
+    except Exception:
+        pass
     p_c, p_t, p_rows = _rollout_fixed_action(env, plus_action, fixed_preference)
     p_path = os.path.join(output_dir, 'baseline_plus100_density_0p5mix.csv')
     with open(p_path, 'w', newline='') as f:
-        w = csv.DictWriter(f, fieldnames=['step','action','carbon','thaw','scalarized'])
+        w = csv.DictWriter(f, fieldnames=['step','action','carbon','thaw','scalarized','preference_weight','baseline_type'])
         w.writeheader()
         w.writerows(p_rows)
     print(f"Saved +100 density baseline to '{p_path}' (totals: carbon={p_c:.3f}, thaw={p_t:.3f})")
@@ -225,10 +235,18 @@ def run_baseline_pair_for_seed(
             os.environ.pop('BOREARL_PHASE', None)
     # Zero density baseline (conifer mix irrelevant; choose 0.5)
     zero_action = _select_action_index(env.unwrapped, 0, 0.5)
+    try:
+        setattr(env.unwrapped, 'baseline_type', 'zero')
+    except Exception:
+        pass
     z_c, z_t, _ = _rollout_fixed_action(env, zero_action, fixed_preference, seed=seed)
 
     # +100 density with 0.5 species mix baseline
     plus_action = _select_action_index(env.unwrapped, 100, 0.5)
+    try:
+        setattr(env.unwrapped, 'baseline_type', 'plus100_0p5mix')
+    except Exception:
+        pass
     p_c, p_t, _ = _rollout_fixed_action(env, plus_action, fixed_preference, seed=seed)
 
     result = {

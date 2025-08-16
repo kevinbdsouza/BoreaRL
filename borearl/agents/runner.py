@@ -19,12 +19,95 @@ from ..utils.plotting import plot_profiling_statistics
 from .baseline import run_baseline_pair_for_seed
 
 
+def _train_with_periodic_saving(model, unwrapped_env, total_timesteps, agent_mod, run_dir, save_interval=100):
+    """
+    Custom training function that saves the model every save_interval episodes.
+    
+    Args:
+        model: The model to train
+        unwrapped_env: The unwrapped environment to monitor episode count
+        total_timesteps: Total timesteps for training
+        agent_mod: Agent module for saving functionality
+        run_dir: Directory to save models
+        save_interval: Save model every N episodes (default: 100)
+    """
+    # Create models directory
+    models_dir = run_dir
+    os.makedirs(models_dir, exist_ok=True)
+    
+    # Track the last episode count when we saved
+    last_saved_episode = 0
+    
+    def save_model_checkpoint(episode_num):
+        """Save model checkpoint if it's time to save"""
+        nonlocal last_saved_episode
+        if episode_num >= last_saved_episode + save_interval:
+            try:
+                # Create checkpoint filename (fixed name, gets overwritten)
+                base_fname = getattr(agent_mod, 'default_model_filename')()
+                name, ext = os.path.splitext(base_fname)
+                checkpoint_fname = f"{name}_episode{ext}"
+                checkpoint_path = os.path.join(models_dir, checkpoint_fname)
+                
+                # Save the model
+                if getattr(agent_mod, 'supports_single_policy_eval')() and hasattr(model, 'get_policy_net'):
+                    policy = model.get_policy_net()
+                    torch.save(policy.state_dict(), checkpoint_path)
+                    print(f"Saved model checkpoint at episode {episode_num}: {checkpoint_path}")
+                else:
+                    # Coverage methods: persist policy set if helper is provided
+                    if hasattr(agent_mod, 'save_policy_set'):
+                        agent_mod.save_policy_set(model, checkpoint_path)
+                        print(f"Saved model checkpoint at episode {episode_num}: {checkpoint_path}")
+                
+                last_saved_episode = episode_num
+            except Exception as e:
+                print(f"Warning: Failed to save model checkpoint at episode {episode_num}: {e}")
+    
+    # Create a custom environment wrapper that monitors episode completion
+    class EpisodeMonitorWrapper:
+        def __init__(self, env, save_callback):
+            self.env = env
+            self.save_callback = save_callback
+            self.original_reset = env.reset
+            
+        def reset(self, *args, **kwargs):
+            result = self.original_reset(*args, **kwargs)
+            # Check if we need to save after reset (episode count is incremented in reset)
+            if hasattr(self.env, 'episode_count'):
+                self.save_callback(self.env.episode_count)
+            return result
+        
+        def step(self, *args, **kwargs):
+            return self.env.step(*args, **kwargs)
+        
+        def __getattr__(self, name):
+            return getattr(self.env, name)
+    
+    # Wrap the environment to monitor episodes
+    monitored_env = EpisodeMonitorWrapper(unwrapped_env, save_model_checkpoint)
+    
+    # Replace the environment in the model if possible
+    if hasattr(model, 'env'):
+        model.env = monitored_env
+    
+    print(f"Starting training with periodic model saving every {save_interval} episodes...")
+    
+    # Start the training process
+    model.train(total_timesteps=total_timesteps)
+    
+    # Save final model
+    final_episode = getattr(unwrapped_env, 'episode_count', 0)
+    save_model_checkpoint(final_episode)
+
+
 def train(
     algorithm: str = 'eupg',
     total_timesteps: int = 500_000,
     use_wandb: bool = True,
     site_specific: bool | None = None,
     run_dir_name: str | None = None,
+    save_interval: int = 100,
 ):
     profiler.start_timer('total_training')
 
@@ -239,7 +322,7 @@ def train(
     # Train with signature robustness
     train_sig = inspect.signature(model.train)
     # During resume, treat total_timesteps as "extra timesteps"; otherwise, it's absolute
-    model.train(total_timesteps=total_timesteps)
+    _train_with_periodic_saving(model, unwrapped_env, total_timesteps, agent_mod, run_dir, save_interval)
 
     # Save trained model into the run directory
     models_dir = run_dir
@@ -283,7 +366,7 @@ def evaluate(
     algorithm: str = 'eupg',
     model_path: str | None = None,
     n_eval_episodes: int = 50,
-    use_wandb: bool = True,
+    use_wandb: bool = False,  # Disable wandb for evaluation
     site_specific: bool | None = None,
     config_overrides: dict | None = None,
     run_dir_name: str | None = None,
@@ -343,24 +426,14 @@ def evaluate(
     os.environ["BOREARL_CSV_RUN_ID"] = run_id
     os.environ["BOREARL_RUN_DIR"] = os.path.abspath(run_dir)
 
-    if use_wandb:
-        # FORCE wandb to use the exact same run_id as training and a single directory
-        os.environ["WANDB_PROJECT"] = "Forest-MORL"
-        os.environ["WANDB_RUN_ID"] = run_id
-        # Use "must" to fail loudly if the run cannot be found
-        os.environ["WANDB_RESUME"] = "must"
-        os.environ["WANDB_DIR"] = os.path.abspath(os.getcwd())
-        os.environ.setdefault("WANDB_SILENT", "true")
-
-        wandb_mode = str(os.environ.get("WANDB_MODE", "")).lower()
-        if "disabled" in wandb_mode or "offline" in wandb_mode:
-            print("Warning: W&B is in offline/disabled mode.")
-        else:
-            os.environ.setdefault("WANDB_MODE", "online")
+    # Wandb disabled for evaluation to prevent hanging issues
+    use_wandb = False
 
     # Ensure evaluation is not affected by any training step caps
     if "BOREARL_MAX_TOTAL_STEPS" in os.environ:
         os.environ.pop("BOREARL_MAX_TOTAL_STEPS", None)
+    # Reset the global step counter for evaluation
+    os.environ["BOREARL_GLOBAL_STEP_COUNT"] = "0"
 
     # Build env config with overrides
     env_config: dict | None = {}
@@ -468,6 +541,8 @@ def evaluate(
 
             for episode_num in range(episodes_for_this_weight):
                 venv.set_attr("current_preference_weight", float(weight[0]))
+                # Ensure the preference weight is properly set in the underlying environment
+                unwrapped_env.current_preference_weight = float(weight[0])
                 # Derive a deterministic per-episode seed so baselines and agent share initial conditions/weather
                 per_episode_seed = int(1000003 * weight_idx + episode_num)
                 obs, info = venv.reset(seed=per_episode_seed)
@@ -503,21 +578,7 @@ def evaluate(
                 thaw_rewards.append(episode_thaw)
                 episodes_completed = (weight_idx - 1) * episodes_per_weight + episode_num + 1
                 
-                # Log each episode individually to W&B
-                if use_wandb:
-                    try:
-                        import wandb  # type: ignore
-                        payload = {
-                            'eval_episode': int(episodes_completed),
-                            'weight_carbon': float(weight[0]),
-                            'weight_thaw': float(weight[1]),
-                            'carbon_objective': float(episode_carbon),
-                            'thaw_objective': float(episode_thaw),
-                            'scalarized_reward': float(np.dot(weight, [episode_carbon, episode_thaw])),
-                        }
-                        wandb.log(payload, commit=True)
-                    except Exception:
-                        pass
+                # Wandb logging disabled for evaluation
 
                 # Run baseline policies for the same seed and preference (exclude counterfactual here),
                 # but do not log baseline results to W&B.
@@ -583,42 +644,89 @@ def evaluate(
         except Exception:
             pass
 
-    # Save an evaluation summary CSV for convenience
+    # Save an evaluation summary CSV aggregated from eval episode CSV by weight
     output_dir = str(getattr(unwrapped_env, 'csv_output_dir', run_dir) or run_dir)
     os.makedirs(output_dir, exist_ok=True)
+    eval_epi_path = os.path.join(output_dir, f"eval_episode_{run_id}.csv")
     eval_csv_path = os.path.join(output_dir, f"eval_summary_{run_id}.csv")
+    rows_to_write: list[list[float]] = []
+    if os.path.exists(eval_epi_path):
+        try:
+            import collections
+            grouped = collections.defaultdict(lambda: {"carbon": [], "thaw": [], "scalarized": []})
+            with open(eval_epi_path, 'r') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    try:
+                        w = float(row.get('preference_weight', row.get('weight_carbon', 0.0)))
+                        c = float(row.get('total_carbon_reward', 0.0))
+                        t = float(row.get('total_thaw_reward', 0.0))
+                        s = float(row.get('total_scalarized_reward', 0.0))
+                        grouped[w]["carbon"].append(c)
+                        grouped[w]["thaw"].append(t)
+                        grouped[w]["scalarized"].append(s)
+                    except Exception:
+                        continue
+            for w, vals in sorted(grouped.items(), key=lambda kv: kv[0]):
+                avg_c = float(np.mean(vals["carbon"])) if vals["carbon"] else 0.0
+                avg_t = float(np.mean(vals["thaw"])) if vals["thaw"] else 0.0
+                avg_s = float(np.mean(vals["scalarized"])) if vals["scalarized"] else 0.0
+                rows_to_write.append([w, 1.0 - w, avg_c, avg_t, avg_s])
+        except Exception:
+            rows_to_write = []
+    # Fallback to in-memory results if episode CSV not available
+    if not rows_to_write and results['weights']:
+        for w, c, t, s in zip(results['weights'], results['carbon_objectives'], results['thaw_objectives'], results['scalarized_rewards']):
+            rows_to_write.append([float(w[0]), float(w[1]), float(c), float(t), float(s)])
     with open(eval_csv_path, 'w', newline='') as f:
         writer = csv.writer(f)
         writer.writerow(["weight_carbon", "weight_thaw", "carbon_objective", "thaw_objective", "scalarized_reward"])
-        for w, c, t, s in zip(results['weights'], results['carbon_objectives'], results['thaw_objectives'], results['scalarized_rewards']):
-            writer.writerow([float(w[0]), float(w[1]), float(c), float(t), float(s)])
-    print(f"Evaluation summary saved to '{eval_csv_path}'")
-
-    # Save a baseline summary CSV with averaged baseline rewards per weight
+        for row in rows_to_write:
+            writer.writerow(row)
+    # Save a baseline summary CSV aggregated from baseline episode CSV by weight and baseline_type
     baseline_csv_path = os.path.join(output_dir, f"baseline_summary_{run_id}.csv")
+    episode_baseline_path = os.path.join(output_dir, f"baseline_episode_{run_id}.csv")
+    aggregated_rows: list[list[float]] = []
+    header = [
+        "weight_carbon", "weight_thaw", "baseline_type",
+        "avg_carbon", "avg_thaw", "avg_scalarized",
+        "count_episodes",
+    ]
+    if os.path.exists(episode_baseline_path):
+        try:
+            import collections
+            grouped = collections.defaultdict(lambda: {"carbon": [], "thaw": [], "scalarized": []})
+            with open(episode_baseline_path, 'r') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    try:
+                        w = float(row.get('preference_weight', 0.0))
+                        bt = str(row.get('baseline_type', '') or '')
+                        # Use totals at episode level
+                        c = float(row.get('total_carbon_reward', 0.0))
+                        t = float(row.get('total_thaw_reward', 0.0))
+                        s = float(row.get('total_scalarized_reward', 0.0))
+                        key = (w, bt)
+                        grouped[key]["carbon"].append(c)
+                        grouped[key]["thaw"].append(t)
+                        grouped[key]["scalarized"].append(s)
+                    except Exception:
+                        continue
+            for (w, bt), vals in grouped.items():
+                avg_c = float(np.mean(vals["carbon"])) if vals["carbon"] else 0.0
+                avg_t = float(np.mean(vals["thaw"])) if vals["thaw"] else 0.0
+                avg_s = float(np.mean(vals["scalarized"])) if vals["scalarized"] else 0.0
+                count = int(len(vals["carbon"]))
+                aggregated_rows.append([w, 1.0 - w, bt, avg_c, avg_t, avg_s, count])
+        except Exception:
+            pass
     with open(baseline_csv_path, 'w', newline='') as f:
         writer = csv.writer(f)
-        writer.writerow([
-            "weight_carbon", "weight_thaw",
-            "zero_carbon", "zero_thaw", "zero_scalarized",
-            "plus100_carbon", "plus100_thaw", "plus100_scalarized",
-        ])
-        for w, bm in zip(results['weights'], baseline_means_per_weight):
-            z = bm.get('zero', {})
-            p = bm.get('plus', {})
-            writer.writerow([
-                float(w[0]), float(w[1]),
-                float(z.get('carbon', 0.0)), float(z.get('thaw', 0.0)), float(z.get('scalarized', 0.0)),
-                float(p.get('carbon', 0.0)), float(p.get('thaw', 0.0)), float(p.get('scalarized', 0.0)),
-            ])
-    print(f"Baseline summary saved to '{baseline_csv_path}'")
+        writer.writerow(header)
+        for row in aggregated_rows:
+            writer.writerow(row)
 
-    # Finish the W&B run after evaluation is complete
-    if use_wandb:
-        import wandb  # type: ignore
-        if wandb.run is not None:
-            print(f"Finishing W&B run: {wandb.run.id}")
-            wandb.finish()
+    # Wandb disabled for evaluation - no cleanup needed
 
     return results
 
