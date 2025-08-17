@@ -36,7 +36,7 @@ AGENT_ARG=${1:-${AGENT:-eupg}}
 RUN_DIR_NAME=${2:-${RUN_DIR:-}} 
 # Optional save interval from env SAVE_INTERVAL or 3rd arg (default: 100)
 SAVE_INTERVAL=${3:-${SAVE_INTERVAL:-100}}
-python main.py --train_then_eval --site_specific --timesteps 400000 --eval_episodes 100 --agent ${AGENT_ARG} --save_interval ${SAVE_INTERVAL} ${RUN_DIR_NAME:+--run_dir_name ${RUN_DIR_NAME}}
+python main.py --train_then_eval --timesteps 300000 --agent ${AGENT_ARG} ${RUN_DIR_NAME:+--run_dir_name ${RUN_DIR_NAME}}
 
 # Check if training was successfu
 if [ $? -ne 0 ]; then

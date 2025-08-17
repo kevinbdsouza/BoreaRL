@@ -37,6 +37,8 @@ def main():
     parser.add_argument("--run_dir_name", type=str, default=None, help="Name for the central run directory under logs/. If omitted, uses the run_id timestamp.")
     parser.add_argument("--no_wandb", action="store_true", help="Disable wandb logging for both training and evaluation.")
     parser.add_argument("--save_interval", type=int, default=100, help="Save model every N episodes during training (default: 100).")
+    parser.add_argument("--eval_interval", type=int, default=1000, help="Evaluate model every N steps during training (default: 1000).")
+    parser.add_argument("--n_eval_episodes", type=int, default=10, help="Number of episodes per weight for periodic evaluation (default: 10).")
     parser.add_argument("--plot_profile", type=str, default=None, help="Path to saved profiling JSON to plot. If omitted, plots current profiler data.")
     parser.add_argument("--baseline", action="store_true", help="Run baselines and counterfactual analysis and exit.")
     parser.add_argument("--train_then_eval", action="store_true", help="Train and then immediately evaluate in the same run.")
@@ -66,6 +68,8 @@ def main():
             algorithm=args.agent,
             run_dir_name=args.run_dir_name,
             save_interval=args.save_interval,
+            eval_interval=args.eval_interval,
+            n_eval_episodes=args.n_eval_episodes,
         )
         # Resolve run directory
         run_dir = os.path.join("logs", args.run_dir_name) if args.run_dir_name else os.environ.get("BOREARL_RUN_DIR")
@@ -106,6 +110,8 @@ def main():
             algorithm=args.agent,
             run_dir_name=args.run_dir_name,
             save_interval=args.save_interval,
+            eval_interval=args.eval_interval,
+            n_eval_episodes=args.n_eval_episodes,
         )
     elif args.evaluate:
         # Resolve run directory
@@ -140,8 +146,16 @@ def main():
     # Optional: quick summary
     if results:
         # Pareto front plot
-        plots_dir = os.path.join("plots")
-        os.makedirs(plots_dir, exist_ok=True)
+        # Determine the run directory for saving plots
+        run_dir = os.path.join("logs", args.run_dir_name) if args.run_dir_name else os.environ.get("BOREARL_RUN_DIR")
+        if not run_dir:
+            # Fallback to global plots directory if no run directory is available
+            plots_dir = os.path.join("plots")
+            os.makedirs(plots_dir, exist_ok=True)
+        else:
+            plots_dir = run_dir
+            os.makedirs(plots_dir, exist_ok=True)
+        
         plt.figure(figsize=(10, 6))
         plt.scatter(results['carbon_objectives'], results['thaw_objectives'],
                     c=np.linspace(0, 1, len(results['weights'])), cmap='viridis', edgecolor='k', s=80)
@@ -157,7 +171,9 @@ def main():
 
     if args.plot_profile is not None:
         # Only show interactively when explicitly requested
-        plot_profiling_statistics(args.plot_profile, show=True)
+        # Determine the run directory for saving plots
+        run_dir = os.path.join("logs", args.run_dir_name) if args.run_dir_name else os.environ.get("BOREARL_RUN_DIR")
+        plot_profiling_statistics(args.plot_profile, show=True, output_dir=run_dir)
 
 
 if __name__ == "__main__":

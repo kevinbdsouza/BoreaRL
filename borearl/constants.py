@@ -15,6 +15,11 @@ CONIFER_FRACTIONS = [0.0, 0.25, 0.5, 0.75, 1.0]
 
 HISTORY_WINDOW = 2
 
+# Memory management constants
+# Maximum number of entries to keep in history lists to prevent memory leaks
+MAX_HISTORY_SIZE = 1000  # For carbon, disturbance, and management history
+MAX_EPISODE_HISTORY_SIZE = 500  # For episode tracking lists (smaller since episodes are shorter)
+
 # Normalization constants
 MAX_TOTAL_CARBON = 50.0
 MAX_GPP = 2.0
@@ -74,14 +79,15 @@ REWARD_EMA_BETA_DEFAULT = 0.99
 STOCK_BONUS_MULTIPLIER = 0.0
 
 # Default ESR/EUPG scalarization weights (used for logging/eval defaults)
-EUPG_DEFAULT_WEIGHTS = (0.5, 0.5)
-
 # Preference selection behavior for episodes
 # When True, the environment will use the fixed preference vector in
 # `EUPG_DEFAULT_WEIGHTS` for every episode instead of randomizing a
 # new preference weight. The scalar preference weight used is the
 # first element of `EUPG_DEFAULT_WEIGHTS`.
-USE_FIXED_PREFERENCE_DEFAULT = False
+EUPG_DEFAULT_WEIGHTS = (1.0, 0.0)
+USE_FIXED_PREFERENCE_DEFAULT = True
+INCLUDE_SITE_PARAMS_IN_OBS_DEFAULT = True  # Generalist-only observation augmentation
+USE_FIXED_SITE_INITIALS_DEFAULT = False   # If True, use fixed site defaults for initial state instead of sampling ranges
 
 # EUPG hyperparameter defaults
 EUPG_GAMMA_DEFAULT = 1
@@ -98,10 +104,6 @@ INITIAL_SOIL_CARBON_RANGE = (2.0, 10.0)  # kg C/m²
 # The environment defaults site_specific=False if not provided; temperature noise determinism
 # and age jitter toggles default to the site-specific flag within the environment.
 SITE_WEATHER_SEED_DEFAULT = 123456
-
-INCLUDE_SITE_PARAMS_IN_OBS_DEFAULT = False  # Generalist-only observation augmentation
-
-USE_FIXED_SITE_INITIALS_DEFAULT = True   # If True, use fixed site defaults for initial state instead of sampling ranges
 
 # Default site parameter overrides (midpoints of physics ranges)
 # These are applied in site-specific mode if no explicit overrides are provided.

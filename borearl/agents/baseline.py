@@ -62,8 +62,12 @@ def run_counterfactual_sensitivity(
     os.makedirs(output_dir, exist_ok=True)
     prev_phase = os.environ.get('BOREARL_PHASE')
     os.environ['BOREARL_PHASE'] = 'baseline'
+    
+    # Ensure the environment config has the proper CSV output directory
+    env_config = {'csv_output_dir': output_dir}
+    
     try:
-        env = make_env()
+        env = make_env(env_config)
     finally:
         if prev_phase is not None:
             os.environ['BOREARL_PHASE'] = prev_phase
@@ -172,8 +176,12 @@ def run_baselines(output_dir: str = 'logs', fixed_preference: float = 0.5):
     os.makedirs(output_dir, exist_ok=True)
     prev_phase = os.environ.get('BOREARL_PHASE')
     os.environ['BOREARL_PHASE'] = 'baseline'
+    
+    # Ensure the environment config has the proper CSV output directory
+    env_config = {'csv_output_dir': output_dir}
+    
     try:
-        env = make_env()
+        env = make_env(env_config)
     finally:
         if prev_phase is not None:
             os.environ['BOREARL_PHASE'] = prev_phase
@@ -226,6 +234,14 @@ def run_baseline_pair_for_seed(
     """
     prev_phase = os.environ.get('BOREARL_PHASE')
     os.environ['BOREARL_PHASE'] = 'baseline'
+    
+    # Ensure the environment config has the proper CSV output directory
+    if env_config is None:
+        env_config = {}
+    if output_dir is not None:
+        env_config = dict(env_config)  # Create a copy to avoid modifying the original
+        env_config['csv_output_dir'] = output_dir
+    
     try:
         env = make_env(env_config)
     finally:

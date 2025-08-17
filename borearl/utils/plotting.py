@@ -11,7 +11,7 @@ import pandas as pd
 from .profiling import profiler
 
 
-def plot_profiling_statistics(profiling_data_file: Optional[str] = None, show: bool = False):
+def plot_profiling_statistics(profiling_data_file: Optional[str] = None, show: bool = False, output_dir: Optional[str] = None):
     if profiling_data_file:
         with open(profiling_data_file, 'r') as f:
             data = json.load(f)
@@ -109,8 +109,12 @@ def plot_profiling_statistics(profiling_data_file: Optional[str] = None, show: b
 
     plt.tight_layout()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    # Ensure plots directory exists
-    plots_dir = os.path.join("plots")
+    # Determine output directory
+    if output_dir:
+        plots_dir = output_dir
+    else:
+        # Fallback to global plots directory if no output directory is provided
+        plots_dir = os.path.join("plots")
     os.makedirs(plots_dir, exist_ok=True)
     plot_filename = os.path.join(plots_dir, f"profiling_plots_{timestamp}.png")
     plt.savefig(plot_filename, dpi=300, bbox_inches='tight')
@@ -138,6 +142,7 @@ def plot_step_reward_histograms(
     figsize: tuple = (16, 10),
     save: bool = True,
     show: bool = True,
+    output_dir: Optional[str] = None,
 ) -> Optional[str]:
     """
     Plot histograms for all reward-related columns in a step-metrics CSV.
@@ -211,7 +216,12 @@ def plot_step_reward_histograms(
 
     saved_path = None
     if save:
-        plots_dir = os.path.join("plots")
+        # Determine output directory
+        if output_dir:
+            plots_dir = output_dir
+        else:
+            # Fallback to global plots directory if no output directory is provided
+            plots_dir = os.path.join("plots")
         os.makedirs(plots_dir, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         saved_path = os.path.join(plots_dir, f"step_reward_histograms_{timestamp}.png")

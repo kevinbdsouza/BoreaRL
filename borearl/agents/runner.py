@@ -7,6 +7,9 @@ from datetime import datetime
 import numpy as np
 import torch
 from mo_gymnasium.wrappers.vector import MOSyncVectorEnv
+import json
+import glob
+from typing import Optional
 
 from . import AGENTS
 from .common import (
@@ -19,9 +22,110 @@ from ..utils.plotting import plot_profiling_statistics
 from .baseline import run_baseline_pair_for_seed
 
 
-def _train_with_periodic_saving(model, unwrapped_env, total_timesteps, agent_mod, run_dir, save_interval=100):
+def _evaluate_model_periodic(model, env_config, agent_mod, run_dir, run_id, current_step, n_eval_episodes=10):
     """
-    Custom training function that saves the model every save_interval episodes.
+    Evaluate the current model checkpoint and log results to CSV.
+    
+    Args:
+        model: The current model to evaluate
+        env_config: Environment configuration
+        agent_mod: Agent module for evaluation
+        run_dir: Directory to save results
+        run_id: Run ID for file naming
+        current_step: Current training step number
+        n_eval_episodes: Number of episodes per weight for evaluation
+    """
+    print(f"Performing periodic evaluation at step {current_step}...")
+    
+    # Create evaluation environment
+    eval_env = make_env(env_config)
+    unwrapped_eval_env = eval_env
+    while hasattr(unwrapped_eval_env, 'env'):
+        unwrapped_eval_env = unwrapped_eval_env.env
+    
+    # Get evaluation weights
+    eval_weights = default_eval_weights(env_config)
+    
+    # Prepare CSV file for logging
+    csv_path = os.path.join(run_dir, f"periodic_eval_{run_id}.csv")
+    csv_exists = os.path.exists(csv_path)
+    
+    with open(csv_path, 'a', newline='') as csvfile:
+        fieldnames = ['step_number', 'lambda_carbon', 'lambda_thaw', 'episode_seed', 'avg_carbon_reward', 'avg_thaw_reward']
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        
+        if not csv_exists:
+            writer.writeheader()
+        
+        # Evaluate for each weight
+        for weight_idx, weight in enumerate(eval_weights):
+            episodes_for_this_weight = n_eval_episodes
+            
+            for episode_num in range(episodes_for_this_weight):
+                # Set preference weight
+                eval_env.current_preference_weight = float(weight[0])
+                
+                # Derive deterministic seed
+                per_episode_seed = int(1000003 * weight_idx + episode_num)
+                obs, info = eval_env.reset(seed=per_episode_seed)
+                
+                terminated, truncated = False, False
+                episode_carbon, episode_thaw = 0.0, 0.0
+                acc_reward = torch.zeros((1, 2), dtype=torch.float32)
+                
+                # Run episode
+                while not (terminated or truncated):
+                    obs_tensor = torch.as_tensor(obs, dtype=torch.float32)
+                    if obs_tensor.ndim == 1:
+                        obs_tensor = obs_tensor.unsqueeze(0)
+                    
+                    with torch.no_grad():
+                        if hasattr(model, 'get_policy_net'):
+                            logits = model.get_policy_net().forward(obs_tensor, acc_reward=acc_reward)
+                        else:
+                            logits = model.policy_forward(obs_tensor, acc_reward=acc_reward)
+                        
+                        if bool(const.EVAL_USE_ARGMAX_ACTIONS):
+                            action = int(torch.argmax(logits, dim=1).item())
+                        else:
+                            action_tensor = torch.distributions.Categorical(logits=logits).sample()
+                            action = int(action_tensor.item())
+                    
+                    import numpy as _np
+                    obs, reward_vector, terminated, truncated, info = eval_env.step(_np.array([action], dtype=_np.int64))
+                    
+                    if hasattr(terminated, '__len__'):
+                        terminated = bool(terminated[0])
+                    if hasattr(truncated, '__len__'):
+                        truncated = bool(truncated[0])
+                    
+                    episode_carbon += float(reward_vector[0])
+                    episode_thaw += float(reward_vector[1])
+                    acc_reward = acc_reward + torch.as_tensor(reward_vector, dtype=torch.float32)
+                
+                # Log results to CSV
+                writer.writerow({
+                    'step_number': current_step,
+                    'lambda_carbon': float(weight[0]),
+                    'lambda_thaw': float(weight[1]),
+                    'episode_seed': per_episode_seed,
+                    'avg_carbon_reward': episode_carbon,
+                    'avg_thaw_reward': episode_thaw
+                })
+    
+    # Clean up
+    try:
+        eval_env.close()
+    except Exception:
+        pass
+    
+    print(f"Periodic evaluation completed at step {current_step}. Results saved to {csv_path}")
+
+
+def _train_with_periodic_saving(model, unwrapped_env, total_timesteps, agent_mod, run_dir, save_interval=100, eval_interval=1000, n_eval_episodes=10):
+    """
+    Custom training function that saves the model every save_interval episodes (only when scalarized_episodic_return improves) 
+    and evaluates every eval_interval steps.
     
     Args:
         model: The model to train
@@ -30,6 +134,8 @@ def _train_with_periodic_saving(model, unwrapped_env, total_timesteps, agent_mod
         agent_mod: Agent module for saving functionality
         run_dir: Directory to save models
         save_interval: Save model every N episodes (default: 100)
+        eval_interval: Evaluate model every N steps (default: 1000)
+        n_eval_episodes: Number of episodes per weight for evaluation (default: 10)
     """
     # Create models directory
     models_dir = run_dir
@@ -37,39 +143,131 @@ def _train_with_periodic_saving(model, unwrapped_env, total_timesteps, agent_mod
     
     # Track the last episode count when we saved
     last_saved_episode = 0
+    last_eval_step = 0
+    best_scalarized_return = float('-inf')  # Track the best metric seen so far
+    
+    # Get run_id for evaluation logging
+    run_id = os.environ.get("BOREARL_RUN_ID", "unknown")
+    
+    # Get environment config for evaluation
+    env_config = {}
+    try:
+        # Extract environment config from the unwrapped environment
+        if hasattr(unwrapped_env, 'site_specific'):
+            env_config['site_specific'] = unwrapped_env.site_specific
+        if hasattr(unwrapped_env, 'eupg_default_weights'):
+            env_config['eupg_default_weights'] = unwrapped_env.eupg_default_weights
+        if hasattr(unwrapped_env, 'use_fixed_preference'):
+            env_config['use_fixed_preference'] = unwrapped_env.use_fixed_preference
+        # Ensure CSV output directory is set correctly
+        if hasattr(unwrapped_env, 'csv_output_dir'):
+            env_config['csv_output_dir'] = unwrapped_env.csv_output_dir
+        else:
+            env_config['csv_output_dir'] = run_dir
+    except Exception:
+        # Fallback: ensure CSV output directory is set
+        env_config['csv_output_dir'] = run_dir
+    
+    def get_latest_scalarized_return() -> Optional[float]:
+        """
+        Get the latest scalarized_episodic_return from wandb local files.
+        This is the safest approach as it doesn't require wandb API access.
+        """
+        try:
+            # Look for wandb summary files in the latest run
+            wandb_dir = os.path.join(os.getcwd(), 'wandb')
+            if not os.path.exists(wandb_dir):
+                return None
+            
+            # Find the latest run directory
+            run_dirs = glob.glob(os.path.join(wandb_dir, 'run-*'))
+            if not run_dirs:
+                # Try latest-run directory
+                latest_run_dir = os.path.join(wandb_dir, 'latest-run')
+                if os.path.exists(latest_run_dir):
+                    run_dirs = [latest_run_dir]
+            
+            if not run_dirs:
+                return None
+            
+            # Sort by modification time to get the latest
+            latest_run_dir = max(run_dirs, key=os.path.getmtime)
+            summary_file = os.path.join(latest_run_dir, 'files', 'wandb-summary.json')
+            
+            if os.path.exists(summary_file):
+                with open(summary_file, 'r') as f:
+                    summary_data = json.load(f)
+                    return summary_data.get('metrics/scalarized_episodic_return')
+            
+            return None
+        except Exception as e:
+            print(f"Warning: Could not read wandb summary: {e}")
+            return None
     
     def save_model_checkpoint(episode_num):
-        """Save model checkpoint if it's time to save"""
-        nonlocal last_saved_episode
+        """Save model checkpoint if it's time to save and metric has improved"""
+        nonlocal last_saved_episode, best_scalarized_return
+        
         if episode_num >= last_saved_episode + save_interval:
             try:
-                # Create checkpoint filename (fixed name, gets overwritten)
-                base_fname = getattr(agent_mod, 'default_model_filename')()
-                name, ext = os.path.splitext(base_fname)
-                checkpoint_fname = f"{name}_episode{ext}"
-                checkpoint_path = os.path.join(models_dir, checkpoint_fname)
+                # Get the current scalarized return
+                current_scalarized_return = get_latest_scalarized_return()
                 
-                # Save the model
-                if getattr(agent_mod, 'supports_single_policy_eval')() and hasattr(model, 'get_policy_net'):
-                    policy = model.get_policy_net()
-                    torch.save(policy.state_dict(), checkpoint_path)
-                    print(f"Saved model checkpoint at episode {episode_num}: {checkpoint_path}")
+                # If we can't get the metric, save anyway (fallback behavior)
+                if current_scalarized_return is None:
+                    print(f"Warning: Could not read scalarized_episodic_return, saving checkpoint anyway at episode {episode_num}")
+                    should_save = True
                 else:
-                    # Coverage methods: persist policy set if helper is provided
-                    if hasattr(agent_mod, 'save_policy_set'):
-                        agent_mod.save_policy_set(model, checkpoint_path)
-                        print(f"Saved model checkpoint at episode {episode_num}: {checkpoint_path}")
+                    # Only save if the metric has improved
+                    should_save = current_scalarized_return > best_scalarized_return
+                    if should_save:
+                        print(f"Metric improved from {best_scalarized_return:.6f} to {current_scalarized_return:.6f}, saving checkpoint")
+                        best_scalarized_return = current_scalarized_return
+                    else:
+                        print(f"Metric {current_scalarized_return:.6f} not better than {best_scalarized_return:.6f}, skipping checkpoint")
                 
-                last_saved_episode = episode_num
+                if should_save:
+                    # Create checkpoint filename (fixed name, gets overwritten)
+                    base_fname = getattr(agent_mod, 'default_model_filename')()
+                    name, ext = os.path.splitext(base_fname)
+                    checkpoint_fname = f"{name}_episode{ext}"
+                    checkpoint_path = os.path.join(models_dir, checkpoint_fname)
+                    
+                    # Save the model
+                    if getattr(agent_mod, 'supports_single_policy_eval')() and hasattr(model, 'get_policy_net'):
+                        policy = model.get_policy_net()
+                        torch.save(policy.state_dict(), checkpoint_path)
+                        print(f"Saved model checkpoint at episode {episode_num}: {checkpoint_path}")
+                    else:
+                        # Coverage methods: persist policy set if helper is provided
+                        if hasattr(agent_mod, 'save_policy_set'):
+                            agent_mod.save_policy_set(model, checkpoint_path)
+                            print(f"Saved model checkpoint at episode {episode_num}: {checkpoint_path}")
+                    
+                    last_saved_episode = episode_num
+                    
             except Exception as e:
                 print(f"Warning: Failed to save model checkpoint at episode {episode_num}: {e}")
     
-    # Create a custom environment wrapper that monitors episode completion
+    def evaluate_model_periodic(current_step):
+        """Evaluate model if it's time to evaluate"""
+        nonlocal last_eval_step
+        if current_step >= last_eval_step + eval_interval:
+            try:
+                _evaluate_model_periodic(model, env_config, agent_mod, run_dir, run_id, current_step, n_eval_episodes)
+                last_eval_step = current_step
+            except Exception as e:
+                print(f"Warning: Failed to perform periodic evaluation at step {current_step}: {e}")
+    
+    # Create a custom environment wrapper that monitors episode completion and steps
     class EpisodeMonitorWrapper:
-        def __init__(self, env, save_callback):
+        def __init__(self, env, save_callback, eval_callback):
             self.env = env
             self.save_callback = save_callback
+            self.eval_callback = eval_callback
             self.original_reset = env.reset
+            self.original_step = env.step
+            self.step_count = 0
             
         def reset(self, *args, **kwargs):
             result = self.original_reset(*args, **kwargs)
@@ -79,19 +277,23 @@ def _train_with_periodic_saving(model, unwrapped_env, total_timesteps, agent_mod
             return result
         
         def step(self, *args, **kwargs):
-            return self.env.step(*args, **kwargs)
+            result = self.original_step(*args, **kwargs)
+            self.step_count += 1
+            # Check if we need to evaluate
+            self.eval_callback(self.step_count)
+            return result
         
         def __getattr__(self, name):
             return getattr(self.env, name)
     
-    # Wrap the environment to monitor episodes
-    monitored_env = EpisodeMonitorWrapper(unwrapped_env, save_model_checkpoint)
+    # Wrap the environment to monitor episodes and steps
+    monitored_env = EpisodeMonitorWrapper(unwrapped_env, save_model_checkpoint, evaluate_model_periodic)
     
     # Replace the environment in the model if possible
     if hasattr(model, 'env'):
         model.env = monitored_env
     
-    print(f"Starting training with periodic model saving every {save_interval} episodes...")
+    print(f"Starting checkpointing every {save_interval} episodes (only when scalarized_episodic_return improves) and evaluation every {eval_interval} steps...")
     
     # Start the training process
     model.train(total_timesteps=total_timesteps)
@@ -108,6 +310,8 @@ def train(
     site_specific: bool | None = None,
     run_dir_name: str | None = None,
     save_interval: int = 100,
+    eval_interval: int = 1000,
+    n_eval_episodes: int = 10,
 ):
     profiler.start_timer('total_training')
 
@@ -322,7 +526,7 @@ def train(
     # Train with signature robustness
     train_sig = inspect.signature(model.train)
     # During resume, treat total_timesteps as "extra timesteps"; otherwise, it's absolute
-    _train_with_periodic_saving(model, unwrapped_env, total_timesteps, agent_mod, run_dir, save_interval)
+    _train_with_periodic_saving(model, unwrapped_env, total_timesteps, agent_mod, run_dir, save_interval, eval_interval, n_eval_episodes)
 
     # Save trained model into the run directory
     models_dir = run_dir
@@ -353,7 +557,7 @@ def train(
     profiling_data_file = os.path.join(output_dir, f"profiling_data_{timestamp}.json")
     profiler.save_profiling_data(profiling_data_file)
     # Save profiling plots without blocking
-    plot_profiling_statistics(profiling_data_file, show=False)
+    plot_profiling_statistics(profiling_data_file, show=False, output_dir=output_dir)
 
     try:
         env.close()

@@ -19,6 +19,13 @@ from ..utils.profiling import profiler
 class ForestEnv(gym.Env):
     """
     A Gym environment for boreal forest management with comprehensive observation space.
+    
+    Memory Management:
+    This environment implements automatic memory management to prevent memory leaks
+    during long training runs. History lists are automatically limited to prevent
+    unbounded growth. See constants.py for configurable limits:
+    - MAX_HISTORY_SIZE: Maximum entries in carbon/disturbance/management history (default: 1000)
+    - MAX_EPISODE_HISTORY_SIZE: Maximum entries in episode tracking lists (default: 500)
     """
     metadata = {'render_modes': []}
 
@@ -462,7 +469,7 @@ class ForestEnv(gym.Env):
                     'avg_stem_density', 'avg_conifer_fraction',
                     'net_carbon_gain', 'carbon_efficiency',
                     'total_positive_flux', 'total_negative_flux',
-                    'preference_weight', 'baseline_type',
+                    'preference_weight', 'baseline_type', 'weather_seed',
                 ])
         row = [
             stats['episode_number'], stats['total_steps'],
@@ -478,6 +485,7 @@ class ForestEnv(gym.Env):
             stats['total_positive_flux'], stats['total_negative_flux'],
             float(getattr(self, 'current_preference_weight', 0.0)),
             str(getattr(self, 'baseline_type', '')),
+            getattr(self, '_episode_weather_seed_used', None),
         ]
         with open(self.episode_csv_path, 'a', newline='') as f:
             csv.writer(f).writerow(row)
@@ -487,6 +495,8 @@ class ForestEnv(gym.Env):
         profiler.start_episode()
         self._in_reset = True
         super().reset(seed=seed)
+        # Store the seed used for this episode (None if no seed was provided)
+        self._episode_seed_used = seed
         self.episode_count += 1
         print(f"Episode {self.episode_count} started")
         self.current_episode_rewards = []
@@ -555,6 +565,8 @@ class ForestEnv(gym.Env):
             self._weather_seed_used = self.site_weather_seed
         else:
             self._weather_seed_used = int(self.np_random.integers(0, 2**31 - 1))
+        # Store the actual seed used for this episode (weather seed for physics, env seed for initial conditions)
+        self._episode_weather_seed_used = self._weather_seed_used
         self.simulator = ebm.ForestSimulator(
             coniferous_fraction=self.conifer_fraction,
             stem_density=self.stem_density,
@@ -617,10 +629,18 @@ class ForestEnv(gym.Env):
             if delta_density < -max_thinning:
                 delta_density = -max_thinning
 
+            # Apply memory management to management history lists
             self.management_history['density_actions'].append(density_action_idx)
+            self.management_history['density_actions'] = self._limit_history_size(self.management_history['density_actions'])
+            
             self.management_history['mix_actions'].append(conifer_fraction_idx)
+            self.management_history['mix_actions'] = self._limit_history_size(self.management_history['mix_actions'])
+            
             self.management_history['density_changes'].append(delta_density)
+            self.management_history['density_changes'] = self._limit_history_size(self.management_history['density_changes'])
+            
             self.management_history['mix_changes'].append(action_conifer_fraction)
+            self.management_history['mix_changes'] = self._limit_history_size(self.management_history['mix_changes'])
             original_density = self.stem_density
             profiler.end_timer('action_processing')
 
@@ -651,13 +671,27 @@ class ForestEnv(gym.Env):
             net_carbon_change = annual_results['net_carbon_change_with_hwp']
             biomass_change = annual_results.get('biomass_carbon_change', 0.0)
             soil_change = annual_results.get('soil_carbon_change', 0.0)
+            # Apply memory management to history lists
             self.carbon_history['biomass_changes'].append(biomass_change)
+            self.carbon_history['biomass_changes'] = self._limit_history_size(self.carbon_history['biomass_changes'])
+            
             self.carbon_history['soil_changes'].append(soil_change)
+            self.carbon_history['soil_changes'] = self._limit_history_size(self.carbon_history['soil_changes'])
+            
             self.carbon_history['total_changes'].append(net_carbon_change)
+            self.carbon_history['total_changes'] = self._limit_history_size(self.carbon_history['total_changes'])
+            
             self.carbon_history['gpp_values'].append(annual_results['total_gpp_kg_m2'])
+            self.carbon_history['gpp_values'] = self._limit_history_size(self.carbon_history['gpp_values'])
+            
             self.disturbance_history['fire_fractions'].append(annual_results['fire_mortality_fraction'])
+            self.disturbance_history['fire_fractions'] = self._limit_history_size(self.disturbance_history['fire_fractions'])
+            
             self.disturbance_history['insect_fractions'].append(annual_results['insect_mortality_fraction'])
+            self.disturbance_history['insect_fractions'] = self._limit_history_size(self.disturbance_history['insect_fractions'])
+            
             self.disturbance_history['drought_indices'].append(annual_results['final_drought_index'])
+            self.disturbance_history['drought_indices'] = self._limit_history_size(self.disturbance_history['drought_indices'])
             self.last_mortality_stems = annual_results['natural_mortality_stems']
             self.last_recruitment_stems = annual_results['natural_recruitment_stems']
             self.last_density_change = annual_results['natural_mortality_stems'] - annual_results['natural_recruitment_stems']
@@ -808,10 +842,19 @@ class ForestEnv(gym.Env):
             profiler.end_timer('termination_checks')
 
             profiler.start_timer('episode_tracking')
+            # Apply memory management to episode tracking lists
             self.current_episode_rewards.append(reward_vector)
+            self.current_episode_rewards = self._limit_history_size(self.current_episode_rewards, max_size=const.MAX_EPISODE_HISTORY_SIZE)
+            
             self.current_episode_carbon_rewards.append(reward_vector[0])
+            self.current_episode_carbon_rewards = self._limit_history_size(self.current_episode_carbon_rewards, max_size=const.MAX_EPISODE_HISTORY_SIZE)
+            
             self.current_episode_thaw_rewards.append(reward_vector[1])
+            self.current_episode_thaw_rewards = self._limit_history_size(self.current_episode_thaw_rewards, max_size=const.MAX_EPISODE_HISTORY_SIZE)
+            
             self.current_episode_actions.append(action)
+            self.current_episode_actions = self._limit_history_size(self.current_episode_actions, max_size=const.MAX_EPISODE_HISTORY_SIZE)
+            
             self.current_episode_states.append({
                 'year': self.year,
                 'stem_density': self.stem_density,
@@ -820,6 +863,7 @@ class ForestEnv(gym.Env):
                 'soil_carbon': self.soil_carbon_kg_m2,
                 'total_carbon': self.biomass_carbon_kg_m2 + self.soil_carbon_kg_m2,
             })
+            self.current_episode_states = self._limit_history_size(self.current_episode_states, max_size=const.MAX_EPISODE_HISTORY_SIZE)
             profiler.end_timer('episode_tracking')
 
             profiler.start_timer('episode_statistics')
@@ -1027,6 +1071,24 @@ class ForestEnv(gym.Env):
             return history_list[-window_size:]
         else:
             return history_list + [0.0] * (window_size - len(history_list))
+
+    def _limit_history_size(self, history_list, max_size=None):
+        """
+        Limit the size of a history list to prevent memory leaks.
+        Keeps the most recent entries and discards older ones.
+        
+        Args:
+            history_list: The list to limit
+            max_size: Maximum number of entries to keep (default: uses constants)
+            
+        Returns:
+            The limited history list
+        """
+        if max_size is None:
+            max_size = const.MAX_HISTORY_SIZE
+        if len(history_list) > max_size:
+            return history_list[-max_size:]
+        return history_list
 
     def _get_recent_average(self, history_list, window_size):
         if len(history_list) == 0:
