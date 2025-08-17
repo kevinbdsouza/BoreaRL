@@ -7,8 +7,6 @@ from datetime import datetime
 import numpy as np
 import torch
 from mo_gymnasium.wrappers.vector import MOSyncVectorEnv
-import json
-import glob
 from typing import Optional
 
 from . import AGENTS
@@ -170,38 +168,38 @@ def _train_with_periodic_saving(model, unwrapped_env, total_timesteps, agent_mod
     
     def get_latest_scalarized_return() -> Optional[float]:
         """
-        Get the latest scalarized_episodic_return from wandb local files.
-        This is the safest approach as it doesn't require wandb API access.
+        Get the latest scalarized reward from the episode metrics CSV file.
         """
         try:
-            # Look for wandb summary files in the latest run
-            wandb_dir = os.path.join(os.getcwd(), 'wandb')
-            if not os.path.exists(wandb_dir):
+            # Look for episode metrics CSV file in the run directory
+            csv_pattern = os.path.join(run_dir, f"episode_metrics_{run_id}.csv")
+            if not os.path.exists(csv_pattern):
                 return None
             
-            # Find the latest run directory
-            run_dirs = glob.glob(os.path.join(wandb_dir, 'run-*'))
-            if not run_dirs:
-                # Try latest-run directory
-                latest_run_dir = os.path.join(wandb_dir, 'latest-run')
-                if os.path.exists(latest_run_dir):
-                    run_dirs = [latest_run_dir]
+            # Read the last line of the CSV to get the latest scalarized reward
+            with open(csv_pattern, 'r') as f:
+                lines = f.readlines()
+                if len(lines) < 2:  # Need at least header + 1 data line
+                    return None
+                
+                # Get the last data line (skip header)
+                last_line = lines[-1].strip()
+                if not last_line:
+                    return None
+                
+                # Parse CSV line to get total_scalarized_reward (6th column, 0-indexed)
+                columns = last_line.split(',')
+                if len(columns) < 7:
+                    return None
+                
+                try:
+                    scalarized_reward = float(columns[6])  # total_scalarized_reward column
+                    return scalarized_reward
+                except (ValueError, IndexError):
+                    return None
             
-            if not run_dirs:
-                return None
-            
-            # Sort by modification time to get the latest
-            latest_run_dir = max(run_dirs, key=os.path.getmtime)
-            summary_file = os.path.join(latest_run_dir, 'files', 'wandb-summary.json')
-            
-            if os.path.exists(summary_file):
-                with open(summary_file, 'r') as f:
-                    summary_data = json.load(f)
-                    return summary_data.get('metrics/scalarized_episodic_return')
-            
-            return None
         except Exception as e:
-            print(f"Warning: Could not read wandb summary: {e}")
+            print(f"Warning: Could not read episode metrics CSV: {e}")
             return None
     
     def save_model_checkpoint(episode_num):
@@ -229,9 +227,7 @@ def _train_with_periodic_saving(model, unwrapped_env, total_timesteps, agent_mod
                 if should_save:
                     # Create checkpoint filename (fixed name, gets overwritten)
                     base_fname = getattr(agent_mod, 'default_model_filename')()
-                    name, ext = os.path.splitext(base_fname)
-                    checkpoint_fname = f"{name}_episode{ext}"
-                    checkpoint_path = os.path.join(models_dir, checkpoint_fname)
+                    checkpoint_path = os.path.join(models_dir, base_fname)
                     
                     # Save the model
                     if getattr(agent_mod, 'supports_single_policy_eval')() and hasattr(model, 'get_policy_net'):
