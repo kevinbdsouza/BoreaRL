@@ -35,8 +35,15 @@ def _evaluate_model_periodic(model, env_config, agent_mod, run_dir, run_id, curr
     """
     print(f"Performing periodic evaluation at step {current_step}...")
     
+    # Create evaluation environment with CSV logging disabled to prevent interference with main training
+    eval_env_config = env_config.copy()
+    eval_env_config['csv_logging_enabled'] = False  # Disable CSV logging for periodic eval
+    
+    # Store the original global step count to restore it later
+    original_global_step = os.environ.get('BOREARL_GLOBAL_STEP_COUNT', '0')
+    
     # Create evaluation environment
-    eval_env = make_env(env_config)
+    eval_env = make_env(eval_env_config)
     unwrapped_eval_env = eval_env
     while hasattr(unwrapped_eval_env, 'env'):
         unwrapped_eval_env = unwrapped_eval_env.env
@@ -61,7 +68,7 @@ def _evaluate_model_periodic(model, env_config, agent_mod, run_dir, run_id, curr
             
             for episode_num in range(episodes_for_this_weight):
                 # Set preference weight
-                eval_env.current_preference_weight = float(weight[0])
+                unwrapped_eval_env.current_preference_weight = float(weight[0])
                 
                 # Derive deterministic seed
                 per_episode_seed = int(1000003 * weight_idx + episode_num)
@@ -116,6 +123,9 @@ def _evaluate_model_periodic(model, env_config, agent_mod, run_dir, run_id, curr
         eval_env.close()
     except Exception:
         pass
+    
+    # Restore the original global step count to prevent interference with main training
+    os.environ['BOREARL_GLOBAL_STEP_COUNT'] = original_global_step
     
     print(f"Periodic evaluation completed at step {current_step}. Results saved to {csv_path}")
 
@@ -176,14 +186,17 @@ def _train_with_periodic_saving(model, unwrapped_env, total_timesteps, agent_mod
             if not os.path.exists(csv_pattern):
                 return None
             
-            # Read the last line of the CSV to get the latest scalarized reward
-            with open(csv_pattern, 'r') as f:
-                lines = f.readlines()
-                if len(lines) < 2:  # Need at least header + 1 data line
-                    return None
+            # Read the last line of the CSV efficiently to get the latest scalarized reward
+            with open(csv_pattern, 'rb') as f:
+                try:  # catch OSError in case of empty file
+                    f.seek(-2, os.SEEK_END)
+                    while f.read(1) != b'\n':
+                        f.seek(-2, os.SEEK_CUR)
+                except OSError:
+                    return None # File is empty or contains only a single line
                 
-                # Get the last data line (skip header)
-                last_line = lines[-1].strip()
+                last_line = f.readline().decode().strip()
+
                 if not last_line:
                     return None
                 

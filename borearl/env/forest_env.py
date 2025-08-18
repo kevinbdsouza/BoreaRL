@@ -825,7 +825,6 @@ class ForestEnv(gym.Env):
             ecological_failure = total_carbon < 1.0
             density_crash = self.unclipped_stem_density < MIN_STEMS_HA
             max_density_truncation = self.consecutive_max_density_steps >= 5
-            carbon_penalty_truncation = self.consecutive_carbon_penalty_steps >= 5
             terminated = ecological_failure
             # Global cap on total training steps across env instances (optional safety)
             max_steps_env = int(os.environ.get('BOREARL_MAX_TOTAL_STEPS', '0'))
@@ -836,7 +835,7 @@ class ForestEnv(gym.Env):
                 os.environ['BOREARL_GLOBAL_STEP_COUNT'] = str(total_steps_so_far)
                 if total_steps_so_far >= max_steps_env:
                     truncated = True
-            truncated = truncated or density_crash or max_density_truncation or carbon_penalty_truncation
+            truncated = truncated or density_crash or max_density_truncation
             if terminated:
                 reward_vector += np.array([-1.0, -1.0])
             profiler.end_timer('termination_checks')

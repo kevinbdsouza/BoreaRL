@@ -37,7 +37,7 @@ def main():
     parser.add_argument("--run_dir_name", type=str, default=None, help="Name for the central run directory under logs/. If omitted, uses the run_id timestamp.")
     parser.add_argument("--no_wandb", action="store_true", help="Disable wandb logging for both training and evaluation.")
     parser.add_argument("--save_interval", type=int, default=100, help="Save model every N episodes during training (default: 100).")
-    parser.add_argument("--eval_interval", type=int, default=1000, help="Evaluate model every N steps during training (default: 1000).")
+    parser.add_argument("--eval_interval", type=int, default=5000, help="Evaluate model every N steps during training (default: 1000).")
     parser.add_argument("--n_eval_episodes", type=int, default=10, help="Number of episodes per weight for periodic evaluation (default: 10).")
     parser.add_argument("--plot_profile", type=str, default=None, help="Path to saved profiling JSON to plot. If omitted, plots current profiler data.")
     parser.add_argument("--baseline", action="store_true", help="Run baselines and counterfactual analysis and exit.")
@@ -45,8 +45,12 @@ def main():
     args = parser.parse_args()
 
     #args.train_then_eval = True
-    #args.timesteps = 100
+    #args.timesteps = 400
     #args.eval_episodes = 3
+    #args.save_interval = 2
+    #args.eval_interval = 50
+    #args.run_dir_name = "test"
+    #args.no_wandb = True
     #args.site_specific = True
 
     if args.no_wandb:
