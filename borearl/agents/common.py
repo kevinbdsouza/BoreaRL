@@ -254,7 +254,7 @@ def default_eval_weights(env_config: dict | None) -> np.ndarray:
             env_default_w = [float(const.EUPG_DEFAULT_WEIGHTS[0]), float(const.EUPG_DEFAULT_WEIGHTS[1])]
         return np.array([env_default_w], dtype=np.float32)
     return np.array([
-        [0.0, 1.0], [0.33, 0.67], [0.67, 0.33], [1.0, 0.0],
+        [1.0, 0.0], [0.75, 0.25], [0.5, 0.5], [0.25, 0.75], [0.0, 1.0],
     ], dtype=np.float32)
 
 
