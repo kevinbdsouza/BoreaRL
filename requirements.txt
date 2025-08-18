@@ -9,5 +9,5 @@ tensorboard
 rich
 morl-baselines
 mo-gymnasium
-wandb>=0.21.1
+wandb
 numba
