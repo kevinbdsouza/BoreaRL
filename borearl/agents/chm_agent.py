@@ -10,6 +10,7 @@ import torch
 
 from .common import build_dynamic_scalarization
 from borearl import constants as const
+from borearl.env.forest_env import ForestEnv
 
 
 def create(
@@ -21,6 +22,7 @@ def create(
     gamma=None,
     learning_rate=None,
     net_arch=None,
+    run_dir_name=None,
 ):
     scalarization = build_dynamic_scalarization(unwrapped_env)
     sel_gamma = float(gamma) if gamma is not None else const.EUPG_GAMMA_DEFAULT
@@ -34,7 +36,7 @@ def create(
         net_arch=sel_arch,
         log=bool(use_wandb),
         project_name="Forest-MORL" if use_wandb else "",
-        experiment_name="CHM-Forest" if use_wandb else "",
+        experiment_name=run_dir_name if run_dir_name else "CHM-Forest",
     )
 
 
@@ -54,22 +56,34 @@ def save_policy_set(model, path: str) -> None:
     Tries, in order:
     - model.save(path) if available
     - torch.save(model.state_dict(), path) if state_dict exists
-    - torch.save(model, path) as a last resort (object pickle)
+    - Skip saving if model contains unpicklable components (like scalarization functions)
     """
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    try:
-        if hasattr(model, "save") and callable(model.save):
-            model.save(path)
-            return
-    except Exception:
-        pass
-    try:
-        state = model.state_dict()  # type: ignore[attr-defined]
-        torch.save(state, path)
+    if hasattr(model, "save") and callable(model.save):
+        model.save(path)
         return
-    except Exception:
-        pass
-    torch.save(model, path)
+    
+    # Try to save state_dict if available
+    if hasattr(model, "state_dict"):
+        try:
+            state = model.state_dict()
+            torch.save(state, path)
+            return
+        except Exception as e:
+            print(f"Warning: Could not save model state_dict: {e}")
+    
+    # Try to save the entire model, but catch pickling errors
+    try:
+        torch.save(model, path)
+        return
+    except Exception as e:
+        if "Can't pickle" in str(e) or "pickle" in str(e).lower():
+            print(f"Warning: Could not save model due to unpicklable components (likely scalarization function): {e}")
+            print("Skipping model save - this is expected for CHM with dynamic scalarization")
+            return
+        else:
+            # Re-raise if it's not a pickling error
+            raise
 
 
 def load_policy_set(model, path: str):
@@ -78,23 +92,31 @@ def load_policy_set(model, path: str):
     Returns the loaded model when whole-object deserialization is used; otherwise
     returns the input model after loading its state.
     """
+    if not path or not os.path.exists(path):
+        raise FileNotFoundError(f"CHM model file not found: {path}")
+    
     try:
         if hasattr(model, "load") and callable(model.load):
             model.load(path)
             return model
-    except Exception:
-        pass
-    try:
-        state = torch.load(path, map_location="cpu")
-        if isinstance(state, dict) and hasattr(model, "load_state_dict"):
-            model.load_state_dict(state)  # type: ignore[attr-defined]
+        
+        # Add CHM and ForestEnv classes to safe globals for PyTorch 2.6+ compatibility
+        torch.serialization.add_safe_globals([CHM, ForestEnv])
+        
+        # Try to load the saved data
+        loaded_data = torch.load(path, map_location="cpu")
+        
+        # Check if we loaded a state_dict or the full model
+        if isinstance(loaded_data, dict) and hasattr(model, "load_state_dict"):
+            # We have a state_dict, load it into the existing model
+            model.load_state_dict(loaded_data)
             return model
-    except Exception:
-        pass
-    # Fallback: object was saved directly
-    try:
-        loaded = torch.load(path, map_location="cpu")
-        return loaded
-    except Exception:
-        return model
+        elif isinstance(loaded_data, CHM):
+            # We have the full model object
+            return loaded_data
+        else:
+            raise RuntimeError(f"Loaded data is neither a state_dict nor a CHM model: {type(loaded_data)}")
+            
+    except Exception as e:
+        raise RuntimeError(f"Failed to load CHM model from {path}: {str(e)}")
 

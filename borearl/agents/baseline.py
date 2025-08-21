@@ -189,10 +189,7 @@ def run_baselines(output_dir: str = 'logs', fixed_preference: float = 0.5):
             os.environ.pop('BOREARL_PHASE', None)
     # Zero density baseline (conifer mix irrelevant; choose 0.5)
     zero_action = _select_action_index(env.unwrapped, 0, 0.5)
-    try:
-        setattr(env.unwrapped, 'baseline_type', 'zero')
-    except Exception:
-        pass
+    setattr(env.unwrapped, 'baseline_type', 'zero')
     z_c, z_t, z_rows = _rollout_fixed_action(env, zero_action, fixed_preference)
     z_path = os.path.join(output_dir, 'baseline_zero_density.csv')
     with open(z_path, 'w', newline='') as f:
@@ -203,10 +200,7 @@ def run_baselines(output_dir: str = 'logs', fixed_preference: float = 0.5):
 
     # +100 density with 0.5 species mix baseline
     plus_action = _select_action_index(env.unwrapped, 100, 0.5)
-    try:
-        setattr(env.unwrapped, 'baseline_type', 'plus100_0p5mix')
-    except Exception:
-        pass
+    setattr(env.unwrapped, 'baseline_type', 'plus100_0p5mix')
     p_c, p_t, p_rows = _rollout_fixed_action(env, plus_action, fixed_preference)
     p_path = os.path.join(output_dir, 'baseline_plus100_density_0p5mix.csv')
     with open(p_path, 'w', newline='') as f:
@@ -251,18 +245,12 @@ def run_baseline_pair_for_seed(
             os.environ.pop('BOREARL_PHASE', None)
     # Zero density baseline (conifer mix irrelevant; choose 0.5)
     zero_action = _select_action_index(env.unwrapped, 0, 0.5)
-    try:
-        setattr(env.unwrapped, 'baseline_type', 'zero')
-    except Exception:
-        pass
+    setattr(env.unwrapped, 'baseline_type', 'zero')
     z_c, z_t, _ = _rollout_fixed_action(env, zero_action, fixed_preference, seed=seed)
 
     # +100 density with 0.5 species mix baseline
     plus_action = _select_action_index(env.unwrapped, 100, 0.5)
-    try:
-        setattr(env.unwrapped, 'baseline_type', 'plus100_0p5mix')
-    except Exception:
-        pass
+    setattr(env.unwrapped, 'baseline_type', 'plus100_0p5mix')
     p_c, p_t, _ = _rollout_fixed_action(env, plus_action, fixed_preference, seed=seed)
 
     result = {

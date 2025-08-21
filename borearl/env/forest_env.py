@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import csv
 from datetime import datetime
-from typing import Dict
+from typing import Dict, Optional
 
 import numpy as np
 import gymnasium as gym
@@ -73,6 +73,7 @@ class ForestEnv(gym.Env):
 
     # --- Asymmetric Thaw Reward Constants ---
     WARMING_PENALTY_FACTOR = const.WARMING_PENALTY_FACTOR
+    BOREARL_USE_CONTRAST_THAW = const.BOREARL_USE_CONTRAST_THAW
 
     # --- HWP Sales Reward ---
     MAX_HWP_SALES_PER_YEAR = const.MAX_HWP_SALES_PER_YEAR
@@ -158,8 +159,20 @@ class ForestEnv(gym.Env):
         # - In site-specific mode, start from defaults and allow user to override selectively
         # - In generalist mode, do NOT preload defaults; only use explicit user-provided overrides
         if self.site_specific:
-            self.site_overrides = dict(const.SITE_DEFAULT_OVERRIDES)
-            self.site_overrides.update(dict(self.config.get('site_overrides', {})))
+            # Check for environment variable first (for seed-based site generation)
+            env_site_overrides = os.environ.get('BOREARL_SITE_OVERRIDES')
+            if env_site_overrides:
+                try:
+                    import ast
+                    env_overrides = ast.literal_eval(env_site_overrides)
+                    self.site_overrides = dict(env_overrides)
+                except (ValueError, SyntaxError):
+                    # Fallback to defaults if parsing fails
+                    self.site_overrides = dict(const.SITE_DEFAULT_OVERRIDES)
+                    self.site_overrides.update(dict(self.config.get('site_overrides', {})))
+            else:
+                self.site_overrides = dict(const.SITE_DEFAULT_OVERRIDES)
+                self.site_overrides.update(dict(self.config.get('site_overrides', {})))
         else:
             self.site_overrides = dict(self.config.get('site_overrides', {}))
         # By default, tie these toggles to the site_specific flag unless explicitly overridden
@@ -382,10 +395,7 @@ class ForestEnv(gym.Env):
                 ])
         if np.isscalar(action) or (hasattr(action, 'size') and action.size == 1):
             # Robustly convert Python scalars, NumPy scalars, or 0-d arrays
-            try:
-                action_value = int(action.item()) if hasattr(action, 'item') else int(action)
-            except Exception:
-                action_value = int(action)
+            action_value = int(action.item()) if hasattr(action, 'item') else int(action)
             density_action_idx = action_value // self._conifer_fraction_size
             species_action_idx = action_value % self._conifer_fraction_size
         else:
@@ -427,26 +437,29 @@ class ForestEnv(gym.Env):
             csv.writer(f).writerow(row)
         # Optional: stream a small set of per-step metrics to W&B during training phase
         try:
-            if str(os.environ.get('WANDB_DISABLED', '')).lower() != 'true' and str(os.environ.get('BOREARL_PHASE', '')).lower() == 'train':
+            wandb_disabled = str(os.environ.get('WANDB_DISABLED', '')).lower() == 'true'
+            borearl_phase = str(os.environ.get('BOREARL_PHASE', '')).lower()
+            in_eval = getattr(self, 'in_evaluation', False)
+            
+            if not wandb_disabled and borearl_phase == 'train' and not in_eval:
                 import wandb  # type: ignore
-                # Use a monotonically increasing global step if present
-                try:
+                # Check if W&B is properly initialized
+                if wandb.run is not None:
+                    # Use the current global step (this is the step number for this step)
                     global_step = int(os.environ.get('BOREARL_GLOBAL_STEP_COUNT', '0'))
-                except Exception:
-                    global_step = int(self.episode_count * 1000000 + len(self.current_episode_rewards))
-                payload = {
-                    'train/step': int(global_step),
-                    'train_step/episode_no': int(self.episode_count),
-                    'train_step/step_no': int(len(self.current_episode_rewards)),
-                    'train_step/year': int(self.year),
-                    'train_step/reward_carbon': float(reward_vector[0]),
-                    'train_step/reward_thaw': float(reward_vector[1]),
-                    'train_step/scalarized_reward': float(scalarized_reward),
-                }
-                # Map to the global step axis to show dense progress
-                wandb.log(payload, step=int(global_step), commit=True)
-        except Exception:
-            pass
+                    payload = {
+                        'episode_no': int(self.episode_count),
+                        'step_no': int(len(self.current_episode_rewards)),
+                        'year': int(self.year),
+                        'reward_carbon': float(reward_vector[0]),
+                        'reward_thaw': float(reward_vector[1]),
+                        'scalarized_reward': float(scalarized_reward),
+                    }
+                    # Simple logging with step
+                    wandb.log(payload, step=global_step, commit=True)
+        except Exception as e:
+            # Log the error for debugging but don't crash
+            print(f"Warning: W&B step logging failed: {e}")
 
     def _log_episode_metrics(self, terminated, truncated):
         if not self.csv_logging_enabled:
@@ -454,6 +467,7 @@ class ForestEnv(gym.Env):
         stats = self.get_episode_statistics()
         if not stats:
             return
+        
         # Lazily create the CSV and write header on first use
         if not os.path.exists(self.episode_csv_path) or os.path.getsize(self.episode_csv_path) == 0:
             with open(self.episode_csv_path, 'w', newline='') as f:
@@ -489,6 +503,8 @@ class ForestEnv(gym.Env):
         ]
         with open(self.episode_csv_path, 'a', newline='') as f:
             csv.writer(f).writerow(row)
+        
+
 
 
     def reset(self, *, seed: int | None = None, options: dict | None = None):
@@ -602,10 +618,7 @@ class ForestEnv(gym.Env):
 
             profiler.start_timer('action_processing')
             if np.isscalar(action) or (hasattr(action, 'size') and action.size == 1):
-                try:
-                    action_value = int(action.item()) if hasattr(action, 'item') else int(action)
-                except Exception:
-                    action_value = int(action)
+                action_value = int(action.item()) if hasattr(action, 'item') else int(action)
                 if not (0 <= action_value < self.action_space.n):
                     action_value = np.clip(action_value, 0, self.action_space.n - 1)
                 density_action_idx = action_value // self._conifer_fraction_size
@@ -714,9 +727,19 @@ class ForestEnv(gym.Env):
             profiler.start_timer('reward_calculation')
             self.cumulative_thaw_dd += thaw_dd_year
             normalized_carbon_change = np.clip(net_carbon_change / self.MAX_CARBON_CHANGE_PER_YEAR, -1.0, 1.0)
-            normalized_asymmetric_thaw = np.clip(
-                asymmetric_thaw_reward / self.MAX_THAW_DEGREE_DAYS_PER_YEAR, -1.0, 1.0
-            )
+            
+            # Calculate normalized asymmetric thaw based on flag
+            if self.BOREARL_USE_CONTRAST_THAW:
+                F_pos = float(annual_results.get('positive_flux_sum', 0.0))
+                F_neg = float(annual_results.get('negative_flux_sum', 0.0))
+                alpha, beta = 1.0, 1.0
+                eps = 1e-6
+                contrast_thaw = (alpha * F_neg - beta * F_pos) / (F_neg + F_pos + eps)  # in [-beta, +alpha]
+                normalized_asymmetric_thaw = contrast_thaw
+            else:
+                normalized_asymmetric_thaw = np.clip(
+                    asymmetric_thaw_reward / self.MAX_THAW_DEGREE_DAYS_PER_YEAR, -1.0, 1.0
+                )
             total_carbon_stock = self.biomass_carbon_kg_m2 + self.soil_carbon_kg_m2
             stock_bonus = self.STOCK_BONUS_MULTIPLIER * np.clip(
                 total_carbon_stock / self.MAX_TOTAL_CARBON, 0.0, 1.0
@@ -827,17 +850,26 @@ class ForestEnv(gym.Env):
             max_density_truncation = self.consecutive_max_density_steps >= 5
             terminated = ecological_failure
             # Global cap on total training steps across env instances (optional safety)
-            max_steps_env = int(os.environ.get('BOREARL_MAX_TOTAL_STEPS', '0'))
-
-            if max_steps_env > 0:
+            # Only count steps if we're not in evaluation mode
+            if not getattr(self, 'in_evaluation', False):
+                # Always increment step counter for logging purposes
                 total_steps_so_far = int(os.environ.get('BOREARL_GLOBAL_STEP_COUNT', '0'))
                 total_steps_so_far += 1
                 os.environ['BOREARL_GLOBAL_STEP_COUNT'] = str(total_steps_so_far)
-                if total_steps_so_far >= max_steps_env:
+                
+                # Check limits
+                max_steps_env = int(os.environ.get('BOREARL_MAX_TOTAL_STEPS', '0'))
+                current_run_steps = int(os.environ.get('BOREARL_CURRENT_RUN_STEPS', '0'))
+
+                if max_steps_env > 0 and total_steps_so_far >= max_steps_env:
+                    truncated = True
+                
+                # Additional check for current run step limit
+                if current_run_steps > 0 and total_steps_so_far >= current_run_steps:
                     truncated = True
             truncated = truncated or density_crash or max_density_truncation
             if terminated:
-                reward_vector += np.array([-1.0, -1.0])
+                reward_vector += np.array([-1.0, 0.0])
             profiler.end_timer('termination_checks')
 
             profiler.start_timer('episode_tracking')
@@ -936,16 +968,13 @@ class ForestEnv(gym.Env):
 
     def _normalize_param(self, key: str, value: float) -> float:
         """Normalize a simulator parameter to [0,1] using config ranges if available."""
-        try:
-            cfg = getattr(self.simulator, 'config', None)
-            if cfg is not None:
-                rng_key = f"{key}_range"
-                if rng_key in cfg:
-                    lo, hi = cfg[rng_key]
-                    if hi > lo:
-                        return float(np.clip((value - lo) / (hi - lo), 0.0, 1.0))
-        except Exception:
-            pass
+        cfg = getattr(self.simulator, 'config', None)
+        if cfg is not None:
+            rng_key = f"{key}_range"
+            if rng_key in cfg:
+                lo, hi = cfg[rng_key]
+                if hi > lo:
+                    return float(np.clip((value - lo) / (hi - lo), 0.0, 1.0))
         # Fallback: best-effort clip
         return float(np.clip(value, 0.0, 1.0))
 
@@ -1047,22 +1076,12 @@ class ForestEnv(gym.Env):
         ]
         obs = np.asarray(base_obs, dtype=np.float32)
 
-        # Append episode parameter context for generalist runs
-        if not self.site_specific and getattr(self, 'include_site_params_in_obs', self.INCLUDE_SITE_PARAMS_IN_OBS):
-            try:
-                p = self.simulator.p if self.simulator is not None else {}
-                ctx_vals = []
-                keys = getattr(self, '_obs_param_keys', self.OBS_PARAM_KEYS)
-                for k in keys:
-                    v = float(p.get(k, 0.0)) if isinstance(p, dict) else 0.0
-                    ctx_vals.append(self._normalize_param(k, v))
-                if ctx_vals:
-                    obs = np.concatenate([obs, np.asarray(ctx_vals, dtype=np.float32)], axis=0)
-            except Exception:
-                # Ensure observation length matches declared space by appending zeros
-                keys = getattr(self, '_obs_param_keys', self.OBS_PARAM_KEYS)
-                zeros_ctx = np.zeros(len(keys), dtype=np.float32)
-                obs = np.concatenate([obs, zeros_ctx], axis=0)
+        # Add site-specific context parameters if enabled
+        if self.include_site_params_in_obs:
+            keys = getattr(self, '_obs_param_keys', self.OBS_PARAM_KEYS)
+            ctx_vals = [self._normalize_param(k, self.simulator.p[k]) for k in keys]
+            obs = np.concatenate([obs, np.asarray(ctx_vals, dtype=np.float32)], axis=0)
+
         return obs
 
     def _get_history_window(self, history_list, window_size):
@@ -1190,14 +1209,25 @@ class ForestEnv(gym.Env):
                 self._preference_was_set_externally = True
         super().__setattr__(name, value)
 
+    def get_current_episode_scalarized_reward(self) -> Optional[float]:
+        """Get the scalarized reward for the current episode if it's completed."""
+        if not self.current_episode_rewards:
+            return None
+        
+        episode_carbon_rewards = np.array(self.current_episode_carbon_rewards)
+        episode_thaw_rewards = np.array(self.current_episode_thaw_rewards)
+        
+        # Compute total scalarized reward using the episode's preference weight
+        pref = float(getattr(self, 'current_preference_weight', 0.5))
+        total_scalarized_reward = float(np.sum(pref * episode_carbon_rewards + (1.0 - pref) * episode_thaw_rewards))
+        
+        return total_scalarized_reward
 
-try:
-    gym.register(
-        id="ForestEnv-v0",
-        entry_point="borearl.env.forest_env:ForestEnv",
-        max_episode_steps=const.EPISODE_LENGTH_YEARS,
-    )
-except Exception:
-    pass
+
+gym.register(
+    id="ForestEnv-v0",
+    entry_point="borearl.env.forest_env:ForestEnv",
+    max_episode_steps=const.EPISODE_LENGTH_YEARS,
+)
 
 

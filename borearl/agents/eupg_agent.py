@@ -20,6 +20,7 @@ def create(
     gamma=None,
     learning_rate=None,
     net_arch=None,
+    run_dir_name=None,
 ):
     scalarization = build_dynamic_scalarization(unwrapped_env)
     sel_weights = np.array(weights) if weights is not None else np.array(const.EUPG_DEFAULT_WEIGHTS)
@@ -27,6 +28,9 @@ def create(
     sel_lr = float(learning_rate) if learning_rate is not None else const.EUPG_LEARNING_RATE_DEFAULT
     sel_arch = list(net_arch) if net_arch is not None else const.EUPG_NET_ARCH_DEFAULT
     # Allow tighter logging cadence if upstream supports it
+    # Use run_dir_name as experiment_name if provided, otherwise fall back to default
+    experiment_name = run_dir_name if run_dir_name else "EUPG-Forest"
+    
     kwargs = dict(
         env=env,
         scalarization=scalarization,
@@ -36,7 +40,7 @@ def create(
         net_arch=sel_arch,
         log=bool(use_wandb),
         project_name="Forest-MORL" if use_wandb else "",
-        experiment_name="EUPG-Forest" if use_wandb else "",
+        experiment_name=experiment_name if use_wandb else "",
     )
     # Some morl-baselines versions accept log_every
     kwargs["log_every"] = int(100)

@@ -12,7 +12,7 @@ from typing import Optional
 from . import AGENTS
 from .common import (
     make_env, save_run_config, build_preliminary_config, build_dynamic_scalarization,
-    default_eval_weights, load_simple_yaml,
+    default_eval_weights, load_simple_yaml, get_action_from_model,
 )
 from borearl import constants as const
 from ..utils.profiling import profiler
@@ -42,11 +42,24 @@ def _evaluate_model_periodic(model, env_config, agent_mod, run_dir, run_id, curr
     # Store the original global step count to restore it later
     original_global_step = os.environ.get('BOREARL_GLOBAL_STEP_COUNT', '0')
     
-    # Create evaluation environment
+    # Create evaluation environment - use a completely separate environment instance
+    # to avoid interfering with the main training step counter
     eval_env = make_env(eval_env_config)
     unwrapped_eval_env = eval_env
-    while hasattr(unwrapped_eval_env, 'env'):
+    seen = set()
+    while hasattr(unwrapped_eval_env, "env"):
+        if id(unwrapped_eval_env) in seen or unwrapped_eval_env.env is unwrapped_eval_env:
+            break
+        seen.add(id(unwrapped_eval_env))
         unwrapped_eval_env = unwrapped_eval_env.env
+    
+    # Set evaluation flag to prevent step counting during evaluation
+    # Find the monitored environment and set the flag
+    monitored_env = None
+    if hasattr(model, 'env'):
+        monitored_env = model.env
+        if hasattr(monitored_env, 'in_evaluation'):
+            monitored_env.in_evaluation = True
     
     # Get evaluation weights
     eval_weights = default_eval_weights(env_config)
@@ -84,29 +97,20 @@ def _evaluate_model_periodic(model, env_config, agent_mod, run_dir, run_id, curr
                     if obs_tensor.ndim == 1:
                         obs_tensor = obs_tensor.unsqueeze(0)
                     
-                    with torch.no_grad():
-                        if hasattr(model, 'get_policy_net'):
-                            logits = model.get_policy_net().forward(obs_tensor, acc_reward=acc_reward)
-                        else:
-                            logits = model.policy_forward(obs_tensor, acc_reward=acc_reward)
-                        
-                        if bool(const.EVAL_USE_ARGMAX_ACTIONS):
-                            action = int(torch.argmax(logits, dim=1).item())
-                        else:
-                            action_tensor = torch.distributions.Categorical(logits=logits).sample()
-                            action = int(action_tensor.item())
+                    action = get_action_from_model(model, obs_tensor, acc_reward, weight)
                     
-                    import numpy as _np
-                    obs, reward_vector, terminated, truncated, info = eval_env.step(_np.array([action], dtype=_np.int64))
+                    # Use scalar action for non-vector environment
+                    obs, reward_vector, terminated, truncated, info = eval_env.step(int(action))
                     
                     if hasattr(terminated, '__len__'):
                         terminated = bool(terminated[0])
                     if hasattr(truncated, '__len__'):
                         truncated = bool(truncated[0])
                     
+                    # Treat reward as 1-D vector (2 objectives)
                     episode_carbon += float(reward_vector[0])
                     episode_thaw += float(reward_vector[1])
-                    acc_reward = acc_reward + torch.as_tensor(reward_vector, dtype=torch.float32)
+                    acc_reward = acc_reward + torch.as_tensor(reward_vector, dtype=torch.float32)  # broadcasts fine
                 
                 # Log results to CSV
                 writer.writerow({
@@ -119,10 +123,11 @@ def _evaluate_model_periodic(model, env_config, agent_mod, run_dir, run_id, curr
                 })
     
     # Clean up
-    try:
-        eval_env.close()
-    except Exception:
-        pass
+    eval_env.close()
+    
+    # Clear evaluation flag to resume step counting
+    if monitored_env and hasattr(monitored_env, 'in_evaluation'):
+        monitored_env.in_evaluation = False
     
     # Restore the original global step count to prevent interference with main training
     os.environ['BOREARL_GLOBAL_STEP_COUNT'] = original_global_step
@@ -145,6 +150,10 @@ def _train_with_periodic_saving(model, unwrapped_env, total_timesteps, agent_mod
         eval_interval: Evaluate model every N steps (default: 1000)
         n_eval_episodes: Number of episodes per weight for evaluation (default: 10)
     """
+    # Define a custom exception to signal the end of training
+    class TrainingComplete(Exception):
+        pass
+    
     # Create models directory
     models_dir = run_dir
     os.makedirs(models_dir, exist_ok=True)
@@ -159,61 +168,80 @@ def _train_with_periodic_saving(model, unwrapped_env, total_timesteps, agent_mod
     
     # Get environment config for evaluation
     env_config = {}
-    try:
-        # Extract environment config from the unwrapped environment
-        if hasattr(unwrapped_env, 'site_specific'):
-            env_config['site_specific'] = unwrapped_env.site_specific
-        if hasattr(unwrapped_env, 'eupg_default_weights'):
-            env_config['eupg_default_weights'] = unwrapped_env.eupg_default_weights
-        if hasattr(unwrapped_env, 'use_fixed_preference'):
-            env_config['use_fixed_preference'] = unwrapped_env.use_fixed_preference
-        # Ensure CSV output directory is set correctly
-        if hasattr(unwrapped_env, 'csv_output_dir'):
-            env_config['csv_output_dir'] = unwrapped_env.csv_output_dir
-        else:
-            env_config['csv_output_dir'] = run_dir
-    except Exception:
-        # Fallback: ensure CSV output directory is set
+    # Extract environment config from the unwrapped environment
+    if hasattr(unwrapped_env, 'site_specific'):
+        env_config['site_specific'] = unwrapped_env.site_specific
+    if hasattr(unwrapped_env, 'eupg_default_weights'):
+        env_config['eupg_default_weights'] = unwrapped_env.eupg_default_weights
+    if hasattr(unwrapped_env, 'use_fixed_preference'):
+        env_config['use_fixed_preference'] = unwrapped_env.use_fixed_preference
+    # Ensure CSV output directory is set correctly
+    if hasattr(unwrapped_env, 'csv_output_dir'):
+        env_config['csv_output_dir'] = unwrapped_env.csv_output_dir
+    else:
         env_config['csv_output_dir'] = run_dir
     
     def get_latest_scalarized_return() -> Optional[float]:
         """
-        Get the latest scalarized reward from the episode metrics CSV file.
+        Get the latest scalarized reward from the training state JSON file.
+        Falls back to CSV parsing for backward compatibility.
         """
         try:
-            # Look for episode metrics CSV file in the run directory
-            csv_pattern = os.path.join(run_dir, f"episode_metrics_{run_id}.csv")
+            # Get run_id from environment variables for consistency
+            current_run_id = os.environ.get("BOREARL_RUN_ID", run_id)
+            
+            # Try to read from the training state JSON file
+            state_file = os.path.join(run_dir, f"training_state_{current_run_id}.json")
+            if os.path.exists(state_file):
+                import json
+                with open(state_file, 'r') as f:
+                    state = json.load(f)
+                    if "latest_scalarized_return" in state:
+                        return float(state["latest_scalarized_return"])
+            
+            # Fallback to CSV parsing for backward compatibility
+            csv_pattern = os.path.join(run_dir, f"episode_metrics_{current_run_id}.csv")
             if not os.path.exists(csv_pattern):
                 return None
             
-            # Read the last line of the CSV efficiently to get the latest scalarized reward
-            with open(csv_pattern, 'rb') as f:
-                try:  # catch OSError in case of empty file
-                    f.seek(-2, os.SEEK_END)
-                    while f.read(1) != b'\n':
-                        f.seek(-2, os.SEEK_CUR)
-                except OSError:
-                    return None # File is empty or contains only a single line
-                
-                last_line = f.readline().decode().strip()
-
-                if not last_line:
-                    return None
-                
-                # Parse CSV line to get total_scalarized_reward (6th column, 0-indexed)
-                columns = last_line.split(',')
-                if len(columns) < 7:
-                    return None
-                
-                try:
-                    scalarized_reward = float(columns[6])  # total_scalarized_reward column
-                    return scalarized_reward
-                except (ValueError, IndexError):
-                    return None
+            import csv
+            with open(csv_pattern, 'r') as f:
+                reader = csv.DictReader(f)
+                last = None
+                for last in reader: pass
+                if last and "total_scalarized_reward" in last:
+                    return float(last["total_scalarized_reward"])
+            return None
             
         except Exception as e:
-            print(f"Warning: Could not read episode metrics CSV: {e}")
+            print(f"Warning: Could not read scalarized reward from any source: {e}")
             return None
+    
+    def save_training_state(scalarized_return: float, episode_num: int):
+        """
+        Save training state to JSON file for robust state management.
+        Only saves when there's an improvement in scalarized return.
+        """
+        try:
+            import json
+            from datetime import datetime
+            
+            # Get run_id from environment variables for consistency
+            current_run_id = os.environ.get("BOREARL_RUN_ID", run_id)
+            
+            # Save to the training state JSON file
+            state_file = os.path.join(run_dir, f"training_state_{current_run_id}.json")
+            state = {
+                "latest_scalarized_return": scalarized_return,
+                "last_episode": episode_num,
+                "last_updated": datetime.now().isoformat(),
+                "run_id": current_run_id
+            }
+            with open(state_file, 'w') as f:
+                json.dump(state, f, indent=2)
+                    
+        except Exception as e:
+            print(f"Warning: Could not save training state: {e}")
     
     def save_model_checkpoint(episode_num):
         """Save model checkpoint if it's time to save and metric has improved"""
@@ -221,10 +249,18 @@ def _train_with_periodic_saving(model, unwrapped_env, total_timesteps, agent_mod
         
         if episode_num >= last_saved_episode + save_interval:
             try:
-                # Get the current scalarized return
-                current_scalarized_return = get_latest_scalarized_return()
+                # Get the current scalarized return from the environment
+                current_scalarized_return = unwrapped_env.get_current_episode_scalarized_reward()
                 
-                # If we can't get the metric, save anyway (fallback behavior)
+                # If we can't get the metric from environment, try getting it from the wrapper
+                if current_scalarized_return is None and hasattr(model, 'env') and hasattr(model.env, 'last_episode_scalarized_reward'):
+                    current_scalarized_return = model.env.last_episode_scalarized_reward
+                
+                # If we still can't get the metric, try reading from JSON
+                if current_scalarized_return is None:
+                    current_scalarized_return = get_latest_scalarized_return()
+                
+                # If we still can't get the metric, save anyway (fallback behavior)
                 if current_scalarized_return is None:
                     print(f"Warning: Could not read scalarized_episodic_return, saving checkpoint anyway at episode {episode_num}")
                     should_save = True
@@ -234,6 +270,8 @@ def _train_with_periodic_saving(model, unwrapped_env, total_timesteps, agent_mod
                     if should_save:
                         print(f"Metric improved from {best_scalarized_return:.6f} to {current_scalarized_return:.6f}, saving checkpoint")
                         best_scalarized_return = current_scalarized_return
+                        # Save the improved state
+                        save_training_state(current_scalarized_return, episode_num)
                     else:
                         print(f"Metric {current_scalarized_return:.6f} not better than {best_scalarized_return:.6f}, skipping checkpoint")
                 
@@ -243,10 +281,39 @@ def _train_with_periodic_saving(model, unwrapped_env, total_timesteps, agent_mod
                     checkpoint_path = os.path.join(models_dir, base_fname)
                     
                     # Save the model
-                    if getattr(agent_mod, 'supports_single_policy_eval')() and hasattr(model, 'get_policy_net'):
-                        policy = model.get_policy_net()
-                        torch.save(policy.state_dict(), checkpoint_path)
-                        print(f"Saved model checkpoint at episode {episode_num}: {checkpoint_path}")
+                    if getattr(agent_mod, 'supports_single_policy_eval')():
+                        if hasattr(model, 'save'):
+                            # PCN agent - use torch.save directly (more reliable)
+                            try:
+                                import torch
+                                # Temporarily remove the wrapper to avoid pickling issues
+                                original_env = model.env
+                                model.env = unwrapped_env
+                                torch.save(model, checkpoint_path)
+                                model.env = original_env  # Restore the wrapper
+                                print(f"Saved model checkpoint at episode {episode_num}: {checkpoint_path}")
+                            except Exception as e:
+                                print(f"Error saving model checkpoint at episode {episode_num}: {e}")
+                        elif hasattr(model, 'get_policy_net'):
+                            # EUPG agent - save policy network
+                            try:
+                                policy = model.get_policy_net()
+                                if policy is not None:
+                                    torch.save(policy.state_dict(), checkpoint_path)
+                                    print(f"Saved model checkpoint at episode {episode_num}: {checkpoint_path}")
+                                else:
+                                    print(f"Warning: Policy network is None for episode {episode_num}")
+                            except Exception as e:
+                                print(f"Error saving model checkpoint at episode {episode_num}: {e}")
+                        elif hasattr(model, 'model'):
+                            # Fallback for other agents with model attribute
+                            try:
+                                torch.save(model.model.state_dict(), checkpoint_path)
+                                print(f"Saved model checkpoint at episode {episode_num}: {checkpoint_path}")
+                            except Exception as e:
+                                print(f"Error saving model checkpoint at episode {episode_num}: {e}")
+                        else:
+                            print(f"Warning: Could not save model checkpoint - no save method found")
                     else:
                         # Coverage methods: persist policy set if helper is provided
                         if hasattr(agent_mod, 'save_policy_set'):
@@ -258,7 +325,68 @@ def _train_with_periodic_saving(model, unwrapped_env, total_timesteps, agent_mod
             except Exception as e:
                 print(f"Warning: Failed to save model checkpoint at episode {episode_num}: {e}")
     
-    def evaluate_model_periodic(current_step):
+    # Create a custom environment wrapper that monitors episode completion and steps
+    class EpisodeMonitorWrapper:
+        def __init__(self, env, save_callback, eval_callback, max_steps, model_ref=None):
+            self.env = env
+            self.save_callback = save_callback
+            self.eval_callback = eval_callback
+            self.max_steps = max_steps
+            self.model_ref = model_ref  # Reference to the model for PCN goal conditioning
+            self.original_reset = env.reset
+            self.original_step = env.step
+            self.step_count = 0
+            self.in_evaluation = False  # Flag to track if we're in evaluation mode
+            
+        def reset(self, *args, **kwargs):
+            # Get the scalarized reward BEFORE reset clears the episode data
+            if hasattr(self.env, 'episode_count'):
+                current_episode = self.env.episode_count
+                # Store the current episode's scalarized reward before it gets cleared
+                if hasattr(self.env, 'get_current_episode_scalarized_reward'):
+                    self.last_episode_scalarized_reward = self.env.get_current_episode_scalarized_reward()
+            
+            result = self.original_reset(*args, **kwargs)
+            
+            # >>> Sync PCN goal-conditioning with env preference (generalist λ) <<<
+            try:
+                # Get the preference weight from the environment after reset
+                pref = float(getattr(self.env, 'current_preference_weight', 0.5))
+                if self.model_ref is not None and hasattr(self.model_ref, 'set_desired_return_and_horizon'):
+                    target_return = np.array([
+                        pref * const.MAX_CARBON_RETURN,
+                        (1.0 - pref) * const.MAX_THAW_RETURN,
+                    ], dtype=np.float32)
+                    target_horizon = const.EPISODE_LENGTH_YEARS
+                    self.model_ref.set_desired_return_and_horizon(target_return, target_horizon)
+            except Exception as e:
+                print(f"Warning: could not sync PCN desired return from env preference: {e}")
+            # ---------------------------------------------------------------
+            
+            # Check if we need to save after reset (episode count is incremented in reset)
+            if hasattr(self.env, 'episode_count'):
+                self.save_callback(self.env.episode_count)
+            return result
+        
+        def step(self, *args, **kwargs):
+            result = self.original_step(*args, **kwargs)
+            
+            # Only count steps if we're not in evaluation mode
+            if not self.in_evaluation:
+                self.step_count += 1
+                # Check if we need to evaluate
+                self.eval_callback(self.step_count)
+                
+                # **FIX:** Instead of just returning True, raise an exception to halt training
+                if self.step_count >= self.max_steps:
+                    raise TrainingComplete(f"Total timesteps limit of {self.max_steps} reached.")
+            
+            return result
+        
+        def __getattr__(self, name):
+            return getattr(self.env, name)
+    
+    def evaluate_callback(current_step):
         """Evaluate model if it's time to evaluate"""
         nonlocal last_eval_step
         if current_step >= last_eval_step + eval_interval:
@@ -268,35 +396,8 @@ def _train_with_periodic_saving(model, unwrapped_env, total_timesteps, agent_mod
             except Exception as e:
                 print(f"Warning: Failed to perform periodic evaluation at step {current_step}: {e}")
     
-    # Create a custom environment wrapper that monitors episode completion and steps
-    class EpisodeMonitorWrapper:
-        def __init__(self, env, save_callback, eval_callback):
-            self.env = env
-            self.save_callback = save_callback
-            self.eval_callback = eval_callback
-            self.original_reset = env.reset
-            self.original_step = env.step
-            self.step_count = 0
-            
-        def reset(self, *args, **kwargs):
-            result = self.original_reset(*args, **kwargs)
-            # Check if we need to save after reset (episode count is incremented in reset)
-            if hasattr(self.env, 'episode_count'):
-                self.save_callback(self.env.episode_count)
-            return result
-        
-        def step(self, *args, **kwargs):
-            result = self.original_step(*args, **kwargs)
-            self.step_count += 1
-            # Check if we need to evaluate
-            self.eval_callback(self.step_count)
-            return result
-        
-        def __getattr__(self, name):
-            return getattr(self.env, name)
-    
     # Wrap the environment to monitor episodes and steps
-    monitored_env = EpisodeMonitorWrapper(unwrapped_env, save_model_checkpoint, evaluate_model_periodic)
+    monitored_env = EpisodeMonitorWrapper(unwrapped_env, save_model_checkpoint, evaluate_callback, total_timesteps, model)
     
     # Replace the environment in the model if possible
     if hasattr(model, 'env'):
@@ -304,10 +405,43 @@ def _train_with_periodic_saving(model, unwrapped_env, total_timesteps, agent_mod
     
     print(f"Starting checkpointing every {save_interval} episodes (only when scalarized_episodic_return improves) and evaluation every {eval_interval} steps...")
     
-    # Start the training process
-    model.train(total_timesteps=total_timesteps)
+    # **FIX:** Wrap the training call in a try...except block to catch our custom exception
+    try:
+        # Start the training process
+        # Handle different agent types with different training signatures
+        import inspect
+        train_sig = inspect.signature(model.train)
+        if 'eval_env' in train_sig.parameters and 'ref_point' in train_sig.parameters:
+            # PCN agent requires eval_env and ref_point
+            from borearl.agents.common import make_env
+            eval_env = make_env(env_config)  # Pass the same config used for training
+            # Use configurable reference point for hypervolume calculation
+            ref_point = np.array(const.PCN_REFERENCE_POINT)
+            
+            # Calculate the total episode budget based on the timestep limit.
+            max_episodes = max(1, total_timesteps // const.EPISODE_LENGTH_YEARS)
+            
+            # Split the episode budget between PCN's two sequential training phases.
+            episodes_per_phase = max(1, max_episodes // 2)
+
+            # Call train with both a timestep limit and a correctly allocated episode limit.
+            # The wrapper will ensure the timestep limit is respected.
+            model.train(
+                total_timesteps=total_timesteps, 
+                eval_env=eval_env, 
+                ref_point=ref_point,
+                # Pass half of the episode budget to each phase.
+                num_er_episodes=episodes_per_phase,
+                num_step_episodes=episodes_per_phase
+            )
+        else:
+            # Standard training interface (EUPG, etc.)
+            model.train(total_timesteps=total_timesteps)
     
-    # Save final model
+    except TrainingComplete as e:
+        print(f"Training successfully halted: {e}")
+    
+    # Manually trigger a final save after training halts
     final_episode = getattr(unwrapped_env, 'episode_count', 0)
     save_model_checkpoint(final_episode)
 
@@ -360,14 +494,11 @@ def train(
     resume_mode = False
     existing_run_id_path = os.path.join(run_dir, 'run_id.txt')
     if os.path.exists(existing_run_id_path):
-        try:
-            with open(existing_run_id_path, 'r') as f:
-                existing_run_id = f.read().strip()
-            if existing_run_id:
-                run_id = existing_run_id
-                resume_mode = True
-        except Exception:
-            resume_mode = False
+        with open(existing_run_id_path, 'r') as f:
+            existing_run_id = f.read().strip()
+        if existing_run_id:
+            run_id = existing_run_id
+            resume_mode = True
     # Persist run id inside the run directory (overwrites with same value when resuming)
     with open(os.path.join(run_dir, 'run_id.txt'), 'w') as f:
         f.write(run_id + "\n")
@@ -380,21 +511,15 @@ def train(
     prev_global_steps = 0
     prev_episodes = 0
     if resume_mode:
-        try:
-            step_csv = os.path.join(run_dir, f"step_metrics_{run_id}.csv")
-            if os.path.exists(step_csv):
-                with open(step_csv, 'r') as f:
-                    # subtract header
-                    prev_global_steps = max(0, sum(1 for _ in f) - 1)
-        except Exception:
-            prev_global_steps = 0
-        try:
-            ep_csv = os.path.join(run_dir, f"episode_metrics_{run_id}.csv")
-            if os.path.exists(ep_csv):
-                with open(ep_csv, 'r') as f:
-                    prev_episodes = max(0, sum(1 for _ in f) - 1)
-        except Exception:
-            prev_episodes = 0
+        step_csv = os.path.join(run_dir, f"step_metrics_{run_id}.csv")
+        if os.path.exists(step_csv):
+            with open(step_csv, 'r') as f:
+                # subtract header
+                prev_global_steps = max(0, sum(1 for _ in f) - 1)
+        ep_csv = os.path.join(run_dir, f"episode_metrics_{run_id}.csv")
+        if os.path.exists(ep_csv):
+            with open(ep_csv, 'r') as f:
+                prev_episodes = max(0, sum(1 for _ in f) - 1)
         # Set the global step so logging and step caps continue from previous
         os.environ["BOREARL_GLOBAL_STEP_COUNT"] = str(prev_global_steps)
 
@@ -402,17 +527,17 @@ def train(
     # If resuming: cap at previous steps + extra requested timesteps; otherwise just total_timesteps
     max_total_steps = int(total_timesteps) + (prev_global_steps if resume_mode else 0)
     os.environ["BOREARL_MAX_TOTAL_STEPS"] = str(max_total_steps)
+    
+    # Also set a stricter limit for the current run
+    os.environ["BOREARL_CURRENT_RUN_STEPS"] = str(total_timesteps)
 
     # Build env config
     env_config: dict = {}
     cfg_path = os.path.join(run_dir, 'config.yaml')
     if resume_mode and os.path.exists(cfg_path):
-        try:
-            loaded_cfg = load_simple_yaml(cfg_path)
-            if isinstance(loaded_cfg, dict) and 'environment' in loaded_cfg:
-                env_config.update(loaded_cfg['environment'] or {})
-        except Exception:
-            env_config = {}
+        loaded_cfg = load_simple_yaml(cfg_path)
+        if isinstance(loaded_cfg, dict) and 'environment' in loaded_cfg:
+            env_config.update(loaded_cfg['environment'] or {})
     # Apply CLI overrides or defaults
     site_flag = False if site_specific is None else bool(site_specific)
     if 'site_specific' not in env_config:
@@ -428,10 +553,7 @@ def train(
     os.environ["BOREARL_PHASE"] = "train"
     # Optional vectorized training envs (disabled for some algorithms)
     num_envs = 1
-    try:
-        num_envs = max(1, int(os.environ.get('BOREARL_NUM_ENVS', '1')))
-    except Exception:
-        num_envs = 1
+    num_envs = max(1, int(os.environ.get('BOREARL_NUM_ENVS', '1')))
     # EUPG from morl-baselines expects non-vectorized envs; enforce single env
     if algo_key == 'eupg':
         num_envs = 1
@@ -439,12 +561,7 @@ def train(
         # Build a sample env for configuration/introspection
         sample_env = make_env(env_config)
         sample_unwrapped = getattr(sample_env, 'unwrapped', sample_env)
-        try:
-            env = MOSyncVectorEnv([lambda: make_env(env_config) for _ in range(num_envs)])
-        except Exception:
-            # Fallback to single env if vectorization unsupported
-            env = make_env(env_config)
-            num_envs = 1
+        env = MOSyncVectorEnv([lambda: make_env(env_config) for _ in range(num_envs)])
         unwrapped_env = sample_unwrapped
     else:
         env = make_env(env_config)
@@ -480,6 +597,7 @@ def train(
         gamma=pre_agent.get('gamma'),
         learning_rate=pre_agent.get('learning_rate'),
         net_arch=pre_agent.get('net_arch'),
+        run_dir_name=run_dir_name,
     )
 
     # If resuming, load the saved model parameters before continuing training
@@ -489,7 +607,7 @@ def train(
             model_path = os.path.join(run_dir, fname)
             if os.path.exists(model_path):
                 if getattr(agent_mod, 'supports_single_policy_eval')() and hasattr(model, 'get_policy_net'):
-                    state = torch.load(model_path, map_location="cpu")
+                    state = torch.load(model_path, map_location="cpu", weights_only=False)
                     model.get_policy_net().load_state_dict(state)
                 elif hasattr(agent_mod, 'load_policy_set'):
                     loaded = agent_mod.load_policy_set(model, model_path)
@@ -502,7 +620,11 @@ def train(
     if resume_mode:
         try:
             uw = unwrapped_env
+            seen = set()
             while hasattr(uw, 'env'):
+                if id(uw) in seen or uw.env is uw:
+                    break
+                seen.add(id(uw))
                 uw = uw.env
             if hasattr(uw, 'episode_count'):
                 setattr(uw, 'episode_count', int(prev_episodes))
@@ -512,13 +634,16 @@ def train(
     # Prefer episode-based step axis for training metrics, if W&B is enabled
     if use_wandb:
         import wandb  # type: ignore
-        # Ensure a consistent project/name and STABLE run id so eval can resume the same run
+        os.environ.pop("WANDB_DISABLED", None)  # <<< ensure not disabled
+
         if wandb.run is None:
+            wandb_run_name = run_dir_name if run_dir_name else f"{algo_key.upper()}-Forest"
             init_kwargs = {
-                "project": os.environ.get("WANDB_PROJECT"),
-                "name": f"{algo_key.upper()}-Forest",
+                "project": os.environ.get("WANDB_PROJECT", "Forest-MORL"),
+                "name": wandb_run_name,
                 "id": run_id,
                 "resume": "allow",
+                "dir": os.path.abspath(os.environ.get("WANDB_DIR", os.getcwd())),
             }
             if os.environ.get("WANDB_ENTITY"):
                 init_kwargs["entity"] = os.environ["WANDB_ENTITY"]
@@ -527,6 +652,11 @@ def train(
         # Convenience: print URL if available
         if wandb.run is not None and getattr(wandb.run, "url", None):
             print(f"W&B run URL: {wandb.run.url}")
+
+        # <<< define a consistent step axis and map your metrics to it
+        # Simple approach: just log with step numbers
+        # Test log to verify W&B is working
+        wandb.log({"test": 1.0}, step=0)
 
     # Save final configuration only for fresh runs (avoid overwriting original training config)
     if not resume_mode:
@@ -542,10 +672,17 @@ def train(
     os.makedirs(models_dir, exist_ok=True)
     fname = getattr(agent_mod, 'default_model_filename')()
     saved_model_path = None
-    if getattr(agent_mod, 'supports_single_policy_eval')() and hasattr(model, 'get_policy_net'):
-        policy = model.get_policy_net()
-        saved_model_path = os.path.join(models_dir, fname)
-        torch.save(policy.state_dict(), saved_model_path)
+    if getattr(agent_mod, 'supports_single_policy_eval')():
+        if hasattr(model, 'get_policy_net'):
+            # EUPG agent - save policy network
+            policy = model.get_policy_net()
+            if policy is not None:
+                saved_model_path = os.path.join(models_dir, fname)
+                torch.save(policy.state_dict(), saved_model_path)
+        elif hasattr(model, 'model'):
+            # PCN agent - save the model
+            saved_model_path = os.path.join(models_dir, fname)
+            torch.save(model.model.state_dict(), saved_model_path)
     else:
         # Coverage methods: persist policy set if helper is provided
         if hasattr(agent_mod, 'save_policy_set'):
@@ -600,27 +737,21 @@ def evaluate(
         # 3) If none found, fall back to logs/ (will error below if run_id.txt missing)
         fallback_id_path = os.path.join(logs_base_dir, 'run_id.txt')
         if os.path.exists(fallback_id_path):
-            try:
-                with open(fallback_id_path, 'r') as f:
-                    fallback_id = f.read().strip()
-                run_dir = os.path.join(logs_base_dir, fallback_id)
-            except Exception:
-                run_dir = logs_base_dir
+            with open(fallback_id_path, 'r') as f:
+                fallback_id = f.read().strip()
+            run_dir = os.path.join(logs_base_dir, fallback_id)
         else:
-            try:
-                candidates: list[tuple[float, str]] = []
-                for entry in os.listdir(logs_base_dir):
-                    entry_path = os.path.join(logs_base_dir, entry)
-                    if os.path.isdir(entry_path):
-                        rid_path = os.path.join(entry_path, 'run_id.txt')
-                        if os.path.exists(rid_path):
-                            candidates.append((os.path.getmtime(rid_path), entry_path))
-                if candidates:
-                    candidates.sort(key=lambda x: x[0], reverse=True)
-                    run_dir = candidates[0][1]
-                else:
-                    run_dir = logs_base_dir
-            except Exception:
+            candidates: list[tuple[float, str]] = []
+            for entry in os.listdir(logs_base_dir):
+                entry_path = os.path.join(logs_base_dir, entry)
+                if os.path.isdir(entry_path):
+                    rid_path = os.path.join(entry_path, 'run_id.txt')
+                    if os.path.exists(rid_path):
+                        candidates.append((os.path.getmtime(rid_path), entry_path))
+            if candidates:
+                candidates.sort(key=lambda x: x[0], reverse=True)
+                run_dir = candidates[0][1]
+            else:
                 run_dir = logs_base_dir
     os.makedirs(run_dir, exist_ok=True)
 
@@ -657,15 +788,16 @@ def evaluate(
             'site_overrides', 'standardize_rewards', 'reward_ema_beta',
             'use_fixed_preference', 'eupg_default_weights',
         }
-        for k in allowed_keys:
-            if k in config_overrides:
-                env_config[k] = config_overrides[k]
-        # Also look inside nested 'environment' section (format of config.yaml)
+        # First look inside nested 'environment' section (format of config.yaml)
         if 'environment' in config_overrides and isinstance(config_overrides['environment'], dict):
             nested_env = config_overrides['environment']
             for k in allowed_keys:
-                if k in nested_env and k not in env_config:
+                if k in nested_env:
                     env_config[k] = nested_env[k]
+        # Then check top-level keys (for backward compatibility)
+        for k in allowed_keys:
+            if k in config_overrides and k not in env_config:
+                env_config[k] = config_overrides[k]
     if site_specific is not None and 'site_specific' not in env_config:
         env_config['site_specific'] = bool(site_specific)
     if 'site_specific' in env_config:
@@ -679,7 +811,11 @@ def evaluate(
     env_config['csv_output_dir'] = run_dir
     env = make_env(env_config)
     unwrapped_env = env
+    seen = set()
     while hasattr(unwrapped_env, 'env'):
+        if id(unwrapped_env) in seen or unwrapped_env.env is unwrapped_env:
+            break
+        seen.add(id(unwrapped_env))
         unwrapped_env = unwrapped_env.env
 
     # Agent constructor
@@ -688,19 +824,14 @@ def evaluate(
     agent_mod = AGENTS[algo_key]
 
     # Build model for inference, applying optional overrides from config
-    selected_weights = None
-    selected_net_arch = None
-    selected_gamma = None
-    selected_lr = None
-    if config_overrides:
-        if 'weights' in config_overrides["agent"]:
-            selected_weights = np.array(config_overrides["agent"]['weights'])
-        if 'net_arch' in config_overrides["agent"]:
-            selected_net_arch = config_overrides["agent"]['net_arch']
-        if 'gamma' in config_overrides["agent"]:
-            selected_gamma = float(config_overrides["agent"]['gamma'])
-        if 'learning_rate' in config_overrides["agent"]:
-            selected_lr = float(config_overrides["agent"]['learning_rate'])
+    selected_weights = selected_net_arch = selected_gamma = selected_lr = None
+    if config_overrides and isinstance(config_overrides, dict):
+        agent_over = config_overrides.get("agent")
+        if isinstance(agent_over, dict):
+            if "weights" in agent_over:      selected_weights = np.array(agent_over["weights"])
+            if "net_arch" in agent_over:     selected_net_arch = agent_over["net_arch"]
+            if "gamma" in agent_over:        selected_gamma = float(agent_over["gamma"])
+            if "learning_rate" in agent_over:selected_lr = float(agent_over["learning_rate"])
 
     # Suppress agent's internal W&B logging during evaluation; we will resume and log manually
     # Phase already set above
@@ -709,25 +840,54 @@ def evaluate(
         env,
         unwrapped_env,
         False,  # Disable wandb in agent to prevent duplicate runs
-        weights=selected_weights,
+        weights=None,  # Don't pass weights for evaluation - we'll load the trained model
         gamma=selected_gamma,
         learning_rate=selected_lr,
         net_arch=selected_net_arch,
+        run_dir_name=run_dir_name,
     )
 
-    # Load model params
+    # Load model params - ensure we always use a trained model for evaluation
+    if not model_path or not os.path.exists(model_path):
+        raise FileNotFoundError(
+            f"Trained model file not found for evaluation. "
+            f"Expected model path: {model_path}. "
+            f"Please ensure the model was trained and saved before evaluation."
+        )
+    
+    # Verify we have a valid model path before proceeding
+    print(f"Loading trained model from: {model_path}")
+    
     if agent_mod.supports_single_policy_eval():
-        policy = model.get_policy_net()
-        if model_path and os.path.exists(model_path):
-            state = torch.load(model_path)
-            policy.load_state_dict(state)
-        policy.eval()
+        if hasattr(agent_mod, 'load_policy_set'):
+            # For agents like PCN that save the entire model object
+            loaded = agent_mod.load_policy_set(model, model_path)
+            if loaded is not None:
+                model = loaded
+                print(f"Successfully loaded PCN model from {model_path}")
+            else:
+                raise RuntimeError(f"Failed to load PCN model from {model_path}")
+        else:
+            # For agents like EUPG that use get_policy_net
+            policy = model.get_policy_net()
+            if policy is not None:  # Check if get_policy_net returns a valid policy
+                state = torch.load(model_path, weights_only=False)
+                policy.load_state_dict(state)
+                policy.eval()
+                print(f"Successfully loaded EUPG model weights from {model_path}")
+            else:
+                raise RuntimeError(f"Failed to get policy network for EUPG model")
     else:
-        if model_path and os.path.exists(model_path) and hasattr(agent_mod, 'load_policy_set'):
+        if hasattr(agent_mod, 'load_policy_set'):
             # load_policy_set may return a new model instance
             loaded = agent_mod.load_policy_set(model, model_path)
             if loaded is not None:
                 model = loaded
+                print(f"Successfully loaded model from {model_path}")
+            else:
+                raise RuntimeError(f"Failed to load model from {model_path}")
+        else:
+            raise RuntimeError(f"Agent {algorithm} does not support model loading for evaluation")
 
     venv = MOSyncVectorEnv([lambda: make_env(env_config) for _ in range(1)])
     eval_weights = default_eval_weights(env_config)
@@ -753,8 +913,17 @@ def evaluate(
             first_episode_seed = int(1000003 * weight_idx)
 
             for episode_num in range(episodes_for_this_weight):
-                venv.set_attr("current_preference_weight", float(weight[0]))
-                # Ensure the preference weight is properly set in the underlying environment
+                # Set preference weight on vector env if supported, otherwise on underlying envs
+                if hasattr(venv, "set_attr"):
+                    venv.set_attr("current_preference_weight", float(weight[0]))
+                else:
+                    # Fallback: set on underlying envs after reset
+                    try:
+                        for e in getattr(venv, "envs", []):
+                            setattr(getattr(e, "unwrapped", e), "current_preference_weight", float(weight[0]))
+                    except Exception:
+                        pass
+                # Also set on the unwrapped env
                 unwrapped_env.current_preference_weight = float(weight[0])
                 # Derive a deterministic per-episode seed so baselines and agent share initial conditions/weather
                 per_episode_seed = int(1000003 * weight_idx + episode_num)
@@ -766,16 +935,7 @@ def evaluate(
                     obs_tensor = torch.as_tensor(obs, dtype=torch.float32)
                     if obs_tensor.ndim == 1:
                         obs_tensor = obs_tensor.unsqueeze(0)
-                    with torch.no_grad():
-                        if hasattr(model, 'get_policy_net'):
-                            logits = model.get_policy_net().forward(obs_tensor, acc_reward=acc_reward)
-                        else:
-                            logits = model.policy_forward(obs_tensor, acc_reward=acc_reward)  # type: ignore
-                        if bool(const.EVAL_USE_ARGMAX_ACTIONS):
-                            action = int(torch.argmax(logits, dim=1).item())
-                        else:
-                            action_tensor = torch.distributions.Categorical(logits=logits).sample()
-                            action = int(action_tensor.item())
+                    action = get_action_from_model(model, obs_tensor, acc_reward, weight)
                     import numpy as _np
                     obs, reward_vector, terminated, truncated, info = venv.step(_np.array([action], dtype=_np.int64))
                     if hasattr(terminated, '__len__'):
@@ -852,10 +1012,7 @@ def evaluate(
                     },
                 })
     finally:
-        try:
-            venv.close()
-        except Exception:
-            pass
+        venv.close()
 
     # Save an evaluation summary CSV aggregated from eval episode CSV by weight
     output_dir = str(getattr(unwrapped_env, 'csv_output_dir', run_dir) or run_dir)

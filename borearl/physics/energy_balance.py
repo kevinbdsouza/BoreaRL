@@ -339,10 +339,7 @@ class ForestSimulator:
         self.use_jit = (self.backend == 'numba') and have_numba
         # Configure timestep for fast mode
         if self.fast_mode:
-            try:
-                self.config['TIME_STEP_MINUTES'] = 360
-            except Exception:
-                pass
+            self.config['TIME_STEP_MINUTES'] = 360
         self.solver_max_iters = int(jit_solver_max_iters) if jit_solver_max_iters is not None else (3 if self.fast_mode else 6)
         self.stability_update_interval_steps = int(stability_update_interval_steps) if stability_update_interval_steps is not None else (4 if self.fast_mode else 1)
         self.p = self._sample_parameters()
@@ -569,16 +566,16 @@ class ForestSimulator:
                 del p[key]
 
         self._sample_seasonal_parameters_sequentially(p)
+        
+        # Handle rain diurnal parameters that are excluded from the main loop
+        self._sample_rain_diurnal_parameters(p)
 
         # Final site-specific overrides: allow fixing any parameter explicitly
         if self.site_overrides:
             for k, v in self.site_overrides.items():
                 p[k] = v
         # Re-validate phenology/snow consistency after overrides
-        try:
-            _validate_phenology_snow_constraints(p, self.rng)
-        except Exception:
-            pass
+        _validate_phenology_snow_constraints(p, self.rng)
         return p
 
     def _sample_seasonal_parameters_sequentially(self, p: Dict[str, Any]):
@@ -673,6 +670,41 @@ class ForestSimulator:
         p['snow_season_end'] = snow_season_end
         del p['snow_season_start_range']
         del p['snow_season_end_range']
+
+    def _sample_rain_diurnal_parameters(self, p: Dict[str, Any]):
+        """Sample rain diurnal parameters that are excluded from the main parameter sampling loop."""
+        
+        # Rain diurnal sensitivity
+        rain_diurnal_sensitivity_range = p['rain_diurnal_sensitivity_range']
+        if self.site_specific:
+            p['rain_diurnal_sensitivity'] = 0.5 * (rain_diurnal_sensitivity_range[0] + rain_diurnal_sensitivity_range[1])
+        else:
+            p['rain_diurnal_sensitivity'] = self.rng.uniform(low=rain_diurnal_sensitivity_range[0], high=rain_diurnal_sensitivity_range[1])
+        del p['rain_diurnal_sensitivity_range']
+        
+        # Rain diurnal threshold
+        rain_diurnal_threshold_range = p['rain_diurnal_threshold_range']
+        if self.site_specific:
+            p['rain_diurnal_threshold'] = 0.5 * (rain_diurnal_threshold_range[0] + rain_diurnal_threshold_range[1])
+        else:
+            p['rain_diurnal_threshold'] = self.rng.uniform(low=rain_diurnal_threshold_range[0], high=rain_diurnal_threshold_range[1])
+        del p['rain_diurnal_threshold_range']
+        
+        # Max diurnal reduction
+        max_diurnal_reduction_range = p['max_diurnal_reduction_range']
+        if self.site_specific:
+            p['max_diurnal_reduction'] = 0.5 * (max_diurnal_reduction_range[0] + max_diurnal_reduction_range[1])
+        else:
+            p['max_diurnal_reduction'] = self.rng.uniform(low=max_diurnal_reduction_range[0], high=max_diurnal_reduction_range[1])
+        del p['max_diurnal_reduction_range']
+        
+        # Min diurnal amplitude
+        min_diurnal_amplitude_range = p['min_diurnal_amplitude_range']
+        if self.site_specific:
+            p['min_diurnal_amplitude'] = 0.5 * (min_diurnal_amplitude_range[0] + min_diurnal_amplitude_range[1])
+        else:
+            p['min_diurnal_amplitude'] = self.rng.uniform(low=min_diurnal_amplitude_range[0], high=min_diurnal_amplitude_range[1])
+        del p['min_diurnal_amplitude_range']
 
     # The remainder of the class (run_annual_cycle, demography applications, etc.)
     # is kept nearly identical to the legacy implementation to preserve behavior.

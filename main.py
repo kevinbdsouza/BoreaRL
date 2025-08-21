@@ -79,17 +79,23 @@ def main():
         run_dir = os.path.join("logs", args.run_dir_name) if args.run_dir_name else os.environ.get("BOREARL_RUN_DIR")
         # Determine model path (prefer the model saved during training; fallback to default agent filename in run dir)
         model_path = None
-        try:
-            if isinstance(train_info, dict) and train_info.get("model_path") and os.path.exists(train_info["model_path"]):
-                model_path = train_info["model_path"]
-        except Exception:
-            pass
+        if isinstance(train_info, dict) and train_info.get("model_path") and os.path.exists(train_info["model_path"]):
+            model_path = train_info["model_path"]
         if (not model_path) and run_dir:
             agent_mod = _AVAILABLE_AGENTS.get(args.agent)
             if agent_mod and hasattr(agent_mod, 'default_model_filename'):
                 candidate = os.path.join(run_dir, agent_mod.default_model_filename())
                 if os.path.exists(candidate):
                     model_path = candidate
+        
+        # Ensure we have a valid model path for evaluation
+        if not model_path or not os.path.exists(model_path):
+            raise FileNotFoundError(
+                f"Trained model file not found for evaluation after training. "
+                f"Expected model path: {model_path}. "
+                f"Run directory: {run_dir}. "
+                f"Please ensure the model was successfully saved during training."
+            )
         # Load config overrides from the run directory if present
         config_overrides = None
         if run_dir:
@@ -120,6 +126,21 @@ def main():
     elif args.evaluate:
         # Resolve run directory
         run_dir = os.path.join("logs", args.run_dir_name) if args.run_dir_name else os.environ.get("BOREARL_RUN_DIR")
+        
+        # If no run_dir specified, find the most recent one
+        if not run_dir:
+            logs_base_dir = "logs"
+            candidates = []
+            for entry in os.listdir(logs_base_dir):
+                entry_path = os.path.join(logs_base_dir, entry)
+                if os.path.isdir(entry_path):
+                    rid_path = os.path.join(entry_path, 'run_id.txt')
+                    if os.path.exists(rid_path):
+                        candidates.append((os.path.getmtime(rid_path), entry_path))
+            if candidates:
+                candidates.sort(key=lambda x: x[0], reverse=True)
+                run_dir = candidates[0][1]
+        
         # Determine model path from run directory and agent default filename
         model_path = None
         if run_dir and os.path.isdir(run_dir):
@@ -128,6 +149,16 @@ def main():
                 candidate = os.path.join(run_dir, agent_mod.default_model_filename())
                 if os.path.exists(candidate):
                     model_path = candidate
+        
+        # Ensure we have a valid model path for evaluation
+        if not model_path or not os.path.exists(model_path):
+            raise FileNotFoundError(
+                f"Trained model file not found for evaluation. "
+                f"Expected model path: {model_path}. "
+                f"Run directory: {run_dir}. "
+                f"Please ensure the model was trained and saved in the specified run directory."
+            )
+        
         # Load config overrides from the run directory if present
         config_overrides = None
         if run_dir:

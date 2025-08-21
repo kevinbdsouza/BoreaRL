@@ -74,42 +74,37 @@ def make_env(env_config: dict | None = None):
 
 
 def set_env_preference(env, pref: float):
-    try:
-        unwrapped = env
-        while hasattr(unwrapped, 'env'):
-            unwrapped = unwrapped.env
-        if hasattr(unwrapped, 'set_preference_weight'):
-            unwrapped.set_preference_weight(pref)
-        else:
-            setattr(unwrapped, 'current_preference_weight', pref)
-    except Exception:
-        pass
+    unwrapped = env
+    seen = set()
+    while hasattr(unwrapped, 'env'):
+        if id(unwrapped) in seen or unwrapped.env is unwrapped:
+            break
+        seen.add(id(unwrapped))
+        unwrapped = unwrapped.env
+    if hasattr(unwrapped, 'set_preference_weight'):
+        unwrapped.set_preference_weight(pref)
+    else:
+        setattr(unwrapped, 'current_preference_weight', pref)
 
 
 def save_run_config(env, agent_name: str, model: Any, total_timesteps: int):
     # If a vectorized env is provided, introspect a single underlying env instance
     unwrapped = env
-    try:
-        # MOSyncVectorEnv API: has attribute env_fns or get_attr
-        if hasattr(env, 'get_attr'):
-            # Try to fetch attribute from the first sub-env
-            vals = env.get_attr('eupg_default_weights')
-            if isinstance(vals, (list, tuple)) and len(vals) > 0:
-                sentinel_weights = vals[0]
-            else:
-                sentinel_weights = None
-            # Grab a single real env for shape/introspection if needed
-            try:
-                first_envs = env.get_attr('observation_space')
-                if first_envs:
-                    unwrapped = env
-            except Exception:
-                pass
-        # Fallback to unwrapped attribute for single env
-        if hasattr(unwrapped, 'unwrapped'):
-            unwrapped = unwrapped.unwrapped
-    except Exception:
-        unwrapped = getattr(env, 'unwrapped', env)
+    # MOSyncVectorEnv API: has attribute env_fns or get_attr
+    if hasattr(env, 'get_attr'):
+        # Try to fetch attribute from the first sub-env
+        vals = env.get_attr('eupg_default_weights')
+        if isinstance(vals, (list, tuple)) and len(vals) > 0:
+            sentinel_weights = vals[0]
+        else:
+            sentinel_weights = None
+        # Grab a single real env for shape/introspection if needed
+        first_envs = env.get_attr('observation_space')
+        if first_envs:
+            unwrapped = env
+    # Fallback to unwrapped attribute for single env
+    if hasattr(unwrapped, 'unwrapped'):
+        unwrapped = unwrapped.unwrapped
     env_conf = {
         'site_specific': bool(getattr(unwrapped, 'site_specific', False)),
         'include_site_params_in_obs': bool(getattr(unwrapped, 'include_site_params_in_obs', False)),
@@ -131,11 +126,8 @@ def save_run_config(env, agent_name: str, model: Any, total_timesteps: int):
     if bool(getattr(unwrapped, 'site_specific', False)):
         env_conf['site_overrides'] = dict(getattr(unwrapped, 'site_overrides', {}))
 
-    try:
-        weights = getattr(model, 'weights', None)
-        weights_list = list(weights.tolist()) if hasattr(weights, 'tolist') else (list(weights) if weights is not None else None)
-    except Exception:
-        weights_list = None
+    weights = getattr(model, 'weights', None)
+    weights_list = list(weights.tolist()) if hasattr(weights, 'tolist') else (list(weights) if weights is not None else None)
 
     agent_conf = {
         'algorithm': str(agent_name).lower(),
@@ -215,15 +207,17 @@ def build_preliminary_config(unwrapped_env, agent_name: str, total_timesteps: in
     return pre_config_dict
 
 
-def build_dynamic_scalarization(unwrapped_env):
-    def scalarization(reward_vector, weights=None):
+class DynamicScalarization:
+    """A picklable scalarization function that dynamically adjusts weights based on environment preference."""
+    
+    def __init__(self, unwrapped_env):
+        self.unwrapped_env = unwrapped_env
+    
+    def __call__(self, reward_vector, weights=None):
         import numpy as _np
         import torch as _torch
-        try:
-            pref = float(getattr(unwrapped_env, 'current_preference_weight', 0.5))
-            dynamic_weights = _np.array([pref, 1.0 - pref], dtype=_np.float32)
-        except Exception:
-            dynamic_weights = _np.array([0.5, 0.5], dtype=_np.float32)
+        pref = float(getattr(self.unwrapped_env, 'current_preference_weight', 0.5))
+        dynamic_weights = _np.array([pref, 1.0 - pref], dtype=_np.float32)
         weights = dynamic_weights
         if isinstance(reward_vector, _torch.Tensor):
             if not isinstance(weights, _torch.Tensor):
@@ -233,23 +227,21 @@ def build_dynamic_scalarization(unwrapped_env):
             else:
                 return _torch.dot(reward_vector, weights)
         return _np.dot(reward_vector, weights)
-    return scalarization
+
+
+def build_dynamic_scalarization(unwrapped_env):
+    """Build a picklable dynamic scalarization function."""
+    return DynamicScalarization(unwrapped_env)
 
 
 def default_eval_weights(env_config: dict | None) -> np.ndarray:
-    try:
-        use_fixed_pref_cfg = bool(env_config.get('use_fixed_preference', const.USE_FIXED_PREFERENCE_DEFAULT)) if isinstance(env_config, dict) else const.USE_FIXED_PREFERENCE_DEFAULT
-    except Exception:
-        use_fixed_pref_cfg = const.USE_FIXED_PREFERENCE_DEFAULT
+    use_fixed_pref_cfg = bool(env_config.get('use_fixed_preference', const.USE_FIXED_PREFERENCE_DEFAULT)) if isinstance(env_config, dict) else const.USE_FIXED_PREFERENCE_DEFAULT
     if use_fixed_pref_cfg:
         env_default_w = None
-        try:
-            if isinstance(env_config, dict) and 'eupg_default_weights' in env_config:
-                w = env_config['eupg_default_weights']
-                if isinstance(w, (list, tuple)) and len(w) == 2:
-                    env_default_w = [float(w[0]), float(w[1])]
-        except Exception:
-            env_default_w = None
+        if isinstance(env_config, dict) and 'eupg_default_weights' in env_config:
+            w = env_config['eupg_default_weights']
+            if isinstance(w, (list, tuple)) and len(w) == 2:
+                env_default_w = [float(w[0]), float(w[1])]
         if env_default_w is None:
             env_default_w = [float(const.EUPG_DEFAULT_WEIGHTS[0]), float(const.EUPG_DEFAULT_WEIGHTS[1])]
         return np.array([env_default_w], dtype=np.float32)
@@ -355,6 +347,61 @@ def load_simple_yaml(path: str) -> dict:
                 container[key] = _parse_scalar_from_yaml_token(value_part)
 
     return root
+
+
+def get_action_from_model(model, obs_tensor, acc_reward, weight):
+    """Gets an action from a model, handling different agent APIs.
+    
+    Args:
+        model: The model to get action from
+        obs_tensor: Observation tensor
+        acc_reward: Accumulated reward tensor
+        weight: Preference weight vector [carbon_weight, thaw_weight]
+        
+    Returns:
+        int: Selected action
+        
+    Raises:
+        NotImplementedError: If model does not have a recognized action method
+    """
+    with torch.no_grad():
+        # Handle different agent types with robust inference
+        if hasattr(model, "act"):  # Unified interface if available
+            return int(model.act(obs_tensor, acc_reward=acc_reward, eval_mode=True))
+        
+        elif hasattr(model, "_act"):  # PCN's private API
+            # PCN is goal-conditioned: map preference weight to desired return
+            # Use constants for maximum return estimates
+            # Create desired return based on the current preference weight
+            target_return = np.array([
+                weight[0] * const.MAX_CARBON_RETURN, 
+                weight[1] * const.MAX_THAW_RETURN
+            ])
+            target_horizon = const.EPISODE_LENGTH_YEARS  # 50 years
+            
+            # Set the desired goal for this specific evaluation
+            if hasattr(model, "set_desired_return_and_horizon"):
+                model.set_desired_return_and_horizon(target_return, target_horizon)
+            
+            return int(model._act(obs_tensor.numpy(), model.desired_return, model.desired_horizon, eval_mode=True))
+        
+        elif hasattr(model, 'get_policy_net'):  # EUPG agent - use get_policy_net
+            policy_net = model.get_policy_net()
+            if policy_net is not None:
+                logits = policy_net.forward(obs_tensor, acc_reward=acc_reward)
+                return int(torch.argmax(logits, dim=1).item()) if bool(const.EVAL_USE_ARGMAX_ACTIONS) \
+                         else int(torch.distributions.Categorical(logits=logits).sample().item())
+            else:
+                # Fallback to policy_forward
+                logits = model.policy_forward(obs_tensor, acc_reward=acc_reward)  # type: ignore
+                return int(torch.argmax(logits, dim=1).item()) if bool(const.EVAL_USE_ARGMAX_ACTIONS) \
+                         else int(torch.distributions.Categorical(logits=logits).sample().item())
+        
+        else:
+            # Fallback to policy_forward
+            logits = model.policy_forward(obs_tensor, acc_reward=acc_reward)  # type: ignore
+            return int(torch.argmax(logits, dim=1).item()) if bool(const.EVAL_USE_ARGMAX_ACTIONS) \
+                     else int(torch.distributions.Categorical(logits=logits).sample().item())
 
 
 

@@ -45,6 +45,10 @@ MAX_DENSITY_CHANGE = float(max(abs(x) for x in DENSITY_ACTIONS))
 # Asymmetric thaw reward
 WARMING_PENALTY_FACTOR = 5.0
 
+# Contrast thaw calculation flag
+# When True, use contrast thaw calculation instead of normalized asymmetric thaw
+BOREARL_USE_CONTRAST_THAW = False
+
 # HWP sales reward
 MAX_HWP_SALES_PER_YEAR = 1.0
 # Drop explicit HWP sales bonus from the reward shaping
@@ -69,6 +73,15 @@ SAFE_MIN_DENSITY_THINNING = 150
 MAX_CARBON_CHANGE_PER_YEAR = 2.0
 MAX_THAW_DEGREE_DAYS_PER_YEAR = 40.0
 
+# PCN maximum return estimates for goal-conditioned evaluation
+# These represent conservative estimates for 50-year episodes
+MAX_CARBON_RETURN = 50.0  # Conservative estimate for 50-year episode
+MAX_THAW_RETURN = 50.0    # Conservative estimate for 50-year episode
+
+# PCN reference point for hypervolume calculation
+# This defines the worst-case scenario used in hypervolume computation
+PCN_REFERENCE_POINT = (-1.5, -1.5)  # Conservative reference point for forest environment
+
 # Reward standardization defaults
 # Set to False to log non-standardized rewards by default while keeping the
 # option to enable per-run via env config `standardize_rewards=True`.
@@ -84,8 +97,8 @@ STOCK_BONUS_MULTIPLIER = 0.0
 # `EUPG_DEFAULT_WEIGHTS` for every episode instead of randomizing a
 # new preference weight. The scalar preference weight used is the
 # first element of `EUPG_DEFAULT_WEIGHTS`.
-EUPG_DEFAULT_WEIGHTS = (0.75, 0.25)
-USE_FIXED_PREFERENCE_DEFAULT = True
+EUPG_DEFAULT_WEIGHTS = (0.5, 0.5)
+USE_FIXED_PREFERENCE_DEFAULT = False
 INCLUDE_SITE_PARAMS_IN_OBS_DEFAULT = True  # Generalist-only observation augmentation
 USE_FIXED_SITE_INITIALS_DEFAULT = False   # If True, use fixed site defaults for initial state instead of sampling ranges
 
@@ -205,5 +218,233 @@ FAST_MODE_DEFAULT = True
 JIT_SOLVER_MAX_ITERS_DEFAULT = 4
 # Update atmospheric stability every N sub-steps (>=1)
 STABILITY_UPDATE_INTERVAL_STEPS_DEFAULT = 3
+
+
+def generate_site_overrides_from_seed(seed: int) -> dict:
+    """
+    Generate site-specific parameter overrides by sampling from physics ranges.
+    
+    This function creates a new set of site overrides for each seed, ensuring
+    that different seeds produce different site configurations in site-specific mode.
+    
+    Args:
+        seed: Random seed for reproducible sampling
+        
+    Returns:
+        Dictionary of site parameter overrides sampled from physics ranges
+    """
+    import numpy as np
+    from .physics.config import get_model_config
+    
+    rng = np.random.default_rng(seed)
+    config = get_model_config()
+    
+    # Sample from ranges to create site-specific overrides
+    site_overrides = {}
+    
+    # Climate and latitude parameters
+    lat_range = config['latitude_deg_range']
+    site_overrides['latitude_deg'] = rng.uniform(low=lat_range[0], high=lat_range[1])
+    
+    # Temperature parameters
+    temp_mean_range = config['T_annual_mean_offset_range']
+    site_overrides['T_annual_mean_offset'] = rng.uniform(low=temp_mean_range[0], high=temp_mean_range[1])
+    
+    temp_amp_range = config['T_seasonal_amplitude_range']
+    site_overrides['T_seasonal_amplitude'] = rng.uniform(low=temp_amp_range[0], high=temp_amp_range[1])
+    
+    temp_diurnal_range = config['T_diurnal_amplitude_range']
+    site_overrides['T_diurnal_amplitude'] = rng.uniform(low=temp_diurnal_range[0], high=temp_diurnal_range[1])
+    
+    temp_peak_range = config['T_hour_peak_diurnal_range']
+    site_overrides['T_hour_peak_diurnal'] = rng.uniform(low=temp_peak_range[0], high=temp_peak_range[1])
+    
+    # Humidity and wind
+    humidity_range = config['mean_relative_humidity_range']
+    site_overrides['mean_relative_humidity'] = rng.uniform(low=humidity_range[0], high=humidity_range[1])
+    
+    u_ref_range = config['u_ref_range']
+    site_overrides['u_ref'] = rng.uniform(low=u_ref_range[0], high=u_ref_range[1])
+    
+    # Surface and soil parameters
+    z0_can_range = config['z0_can_range']
+    site_overrides['z0_can'] = rng.uniform(low=z0_can_range[0], high=z0_can_range[1])
+    
+    z0_soil_range = config['z0_soil_range']
+    site_overrides['z0_soil'] = rng.uniform(low=z0_soil_range[0], high=z0_soil_range[1])
+    
+    k_soil_range = config['k_soil_range']
+    site_overrides['k_soil'] = rng.uniform(low=k_soil_range[0], high=k_soil_range[1])
+    
+    swc_range = config['SWC_max_mm_range']
+    site_overrides['SWC_max_mm'] = rng.uniform(low=swc_range[0], high=swc_range[1])
+    
+    stress_range = config['soil_stress_threshold_range']
+    site_overrides['soil_stress_threshold'] = rng.uniform(low=stress_range[0], high=stress_range[1])
+    
+    deep_temp_range = config['T_deep_boundary_range']
+    site_overrides['T_deep_boundary'] = rng.uniform(low=deep_temp_range[0], high=deep_temp_range[1])
+    
+    k_ext_range = config['k_ext_factor_range']
+    site_overrides['k_ext_factor'] = rng.uniform(low=k_ext_range[0], high=k_ext_range[1])
+    
+    k_snow_range = config['k_snow_factor_range']
+    site_overrides['k_snow_factor'] = rng.uniform(low=k_snow_range[0], high=k_snow_range[1])
+    
+    # Phenology parameters
+    growth_day_range = config['growth_day_range']
+    site_overrides['growth_day'] = int(rng.uniform(low=growth_day_range[0], high=growth_day_range[1]))
+    
+    fall_day_range = config['fall_day_range']
+    site_overrides['fall_day'] = int(rng.uniform(low=fall_day_range[0], high=fall_day_range[1]))
+    
+    growth_rate_range = config['growth_rate_range']
+    site_overrides['growth_rate'] = rng.uniform(low=growth_rate_range[0], high=growth_rate_range[1])
+    
+    fall_rate_range = config['fall_rate_range']
+    site_overrides['fall_rate'] = rng.uniform(low=fall_rate_range[0], high=fall_rate_range[1])
+    
+    woody_range = config['woody_area_index_range']
+    site_overrides['woody_area_index'] = rng.uniform(low=woody_range[0], high=woody_range[1])
+    
+    # Seasonal windows
+    shoulder1_start_range = config['shoulder_1_start_range']
+    site_overrides['shoulder_1_start'] = int(rng.uniform(low=shoulder1_start_range[0], high=shoulder1_start_range[1]))
+    
+    shoulder1_end_range = config['shoulder_1_end_range']
+    site_overrides['shoulder_1_end'] = int(rng.uniform(low=shoulder1_end_range[0], high=shoulder1_end_range[1]))
+    
+    summer_start_range = config['summer_day_start_range']
+    site_overrides['summer_day_start'] = int(rng.uniform(low=summer_start_range[0], high=summer_start_range[1]))
+    
+    summer_end_range = config['summer_day_end_range']
+    site_overrides['summer_day_end'] = int(rng.uniform(low=summer_end_range[0], high=summer_end_range[1]))
+    
+    shoulder2_start_range = config['shoulder_2_start_range']
+    site_overrides['shoulder_2_start'] = int(rng.uniform(low=shoulder2_start_range[0], high=shoulder2_start_range[1]))
+    
+    shoulder2_end_range = config['shoulder_2_end_range']
+    site_overrides['shoulder_2_end'] = int(rng.uniform(low=shoulder2_end_range[0], high=shoulder2_end_range[1]))
+    
+    snow_end_range = config['snow_season_end_range']
+    site_overrides['snow_season_end'] = int(rng.uniform(low=snow_end_range[0], high=snow_end_range[1]))
+    
+    snow_start_range = config['snow_season_start_range']
+    site_overrides['snow_season_start'] = int(rng.uniform(low=snow_start_range[0], high=snow_start_range[1]))
+    
+    # Weather stochasticity
+    temp_noise_range = config['T_daily_noise_std_range']
+    site_overrides['T_daily_noise_std'] = rng.uniform(low=temp_noise_range[0], high=temp_noise_range[1])
+    
+    # Precipitation climatology
+    rain_summer_prob_range = config['rain_summer_prob_range']
+    site_overrides['rain_summer_prob'] = rng.uniform(low=rain_summer_prob_range[0], high=rain_summer_prob_range[1])
+    
+    rain_summer_mm_range = config['rain_summer_mm_day_range']
+    site_overrides['rain_summer_mm_day'] = rng.uniform(low=rain_summer_mm_range[0], high=rain_summer_mm_range[1])
+    
+    rain_shoulder_prob_range = config['rain_shoulder_prob_range']
+    site_overrides['rain_shoulder_prob'] = rng.uniform(low=rain_shoulder_prob_range[0], high=rain_shoulder_prob_range[1])
+    
+    rain_shoulder_mm_range = config['rain_shoulder_mm_day_range']
+    site_overrides['rain_shoulder_mm_day'] = rng.uniform(low=rain_shoulder_mm_range[0], high=rain_shoulder_mm_range[1])
+    
+    snow_winter_prob_range = config['snow_winter_prob_range']
+    site_overrides['snow_winter_prob'] = rng.uniform(low=snow_winter_prob_range[0], high=snow_winter_prob_range[1])
+    
+    winter_snow_range = config['winter_snow_mm_day_range']
+    site_overrides['winter_snow_mm_day'] = rng.uniform(low=winter_snow_range[0], high=winter_snow_range[1])
+    
+    # Temperature-precipitation sensitivity
+    temp_precip_summer_sens_range = config['temp_precip_summer_sensitivity_range']
+    site_overrides['temp_precip_summer_sensitivity'] = rng.uniform(low=temp_precip_summer_sens_range[0], high=temp_precip_summer_sens_range[1])
+    
+    temp_precip_shoulder_sens_range = config['temp_precip_shoulder_sensitivity_range']
+    site_overrides['temp_precip_shoulder_sensitivity'] = rng.uniform(low=temp_precip_shoulder_sens_range[0], high=temp_precip_shoulder_sens_range[1])
+    
+    temp_precip_summer_base_range = config['temp_precip_summer_base_temp_range']
+    site_overrides['temp_precip_summer_base_temp'] = rng.uniform(low=temp_precip_summer_base_range[0], high=temp_precip_summer_base_range[1])
+    
+    temp_precip_shoulder_base_range = config['temp_precip_shoulder_base_temp_range']
+    site_overrides['temp_precip_shoulder_base_temp'] = rng.uniform(low=temp_precip_shoulder_base_range[0], high=temp_precip_shoulder_base_range[1])
+    
+    # Rain diurnal patterns
+    rain_diurnal_sens_range = config['rain_diurnal_sensitivity_range']
+    site_overrides['rain_diurnal_sensitivity'] = rng.uniform(low=rain_diurnal_sens_range[0], high=rain_diurnal_sens_range[1])
+    
+    rain_diurnal_thresh_range = config['rain_diurnal_threshold_range']
+    site_overrides['rain_diurnal_threshold'] = rng.uniform(low=rain_diurnal_thresh_range[0], high=rain_diurnal_thresh_range[1])
+    
+    max_diurnal_reduction_range = config['max_diurnal_reduction_range']
+    site_overrides['max_diurnal_reduction'] = rng.uniform(low=max_diurnal_reduction_range[0], high=max_diurnal_reduction_range[1])
+    
+    min_diurnal_amp_range = config['min_diurnal_amplitude_range']
+    site_overrides['min_diurnal_amplitude'] = rng.uniform(low=min_diurnal_amp_range[0], high=min_diurnal_amp_range[1])
+    
+    # Carbon cycle parameters
+    r_base_range = config['R_BASE_KG_M2_YR_range']
+    site_overrides['R_BASE_KG_M2_YR'] = rng.uniform(low=r_base_range[0], high=r_base_range[1])
+    
+    r_base_soil_range = config['R_BASE_SOIL_KG_M2_YR_range']
+    site_overrides['R_BASE_SOIL_KG_M2_YR'] = rng.uniform(low=r_base_soil_range[0], high=r_base_soil_range[1])
+    
+    q10_range = config['Q10_range']
+    site_overrides['Q10'] = rng.uniform(low=q10_range[0], high=q10_range[1])
+    
+    litterfall_frac_range = config['LITTERFALL_FRACTION_range']
+    site_overrides['LITTERFALL_FRACTION'] = rng.uniform(low=litterfall_frac_range[0], high=litterfall_frac_range[1])
+    
+    litterfall_season_range = config['LITTERFALL_SEASONALITY_range']
+    site_overrides['LITTERFALL_SEASONALITY'] = rng.uniform(low=litterfall_season_range[0], high=litterfall_season_range[1])
+    
+    # Stand structure parameters
+    lai_conifer_range = config['LAI_max_conifer_range']
+    site_overrides['LAI_max_conifer'] = rng.uniform(low=lai_conifer_range[0], high=lai_conifer_range[1])
+    
+    lai_deciduous_range = config['LAI_max_deciduous_range']
+    site_overrides['LAI_max_deciduous'] = rng.uniform(low=lai_deciduous_range[0], high=lai_deciduous_range[1])
+    
+    alpha_conifer_range = config['alpha_can_base_conifer_range']
+    site_overrides['alpha_can_base_conifer'] = rng.uniform(low=alpha_conifer_range[0], high=alpha_conifer_range[1])
+    
+    alpha_deciduous_range = config['alpha_can_base_deciduous_range']
+    site_overrides['alpha_can_base_deciduous'] = rng.uniform(low=alpha_deciduous_range[0], high=alpha_deciduous_range[1])
+    
+    # Demography parameters
+    mortality_range = config['NATURAL_MORTALITY_RATE_range']
+    site_overrides['NATURAL_MORTALITY_RATE'] = rng.uniform(low=mortality_range[0], high=mortality_range[1])
+    
+    recruitment_range = config['NATURAL_RECRUITMENT_RATE_range']
+    site_overrides['NATURAL_RECRUITMENT_RATE'] = rng.uniform(low=recruitment_range[0], high=recruitment_range[1])
+    
+    max_density_range = config['MAX_NATURAL_DENSITY_range']
+    site_overrides['MAX_NATURAL_DENSITY'] = int(rng.uniform(low=max_density_range[0], high=max_density_range[1]))
+    
+    density_mortality_range = config['DENSITY_DEPENDENT_MORTALITY_range']
+    site_overrides['DENSITY_DEPENDENT_MORTALITY'] = rng.uniform(low=density_mortality_range[0], high=density_mortality_range[1])
+    
+    density_threshold_range = config['DENSITY_MORTALITY_THRESHOLD_range']
+    site_overrides['DENSITY_MORTALITY_THRESHOLD'] = rng.uniform(low=density_threshold_range[0], high=density_threshold_range[1])
+    
+    # Disturbance parameters
+    fire_drought_range = config['FIRE_DROUGHT_THRESHOLD_range']
+    site_overrides['FIRE_DROUGHT_THRESHOLD'] = int(rng.uniform(low=fire_drought_range[0], high=fire_drought_range[1]))
+    
+    fire_prob_range = config['FIRE_BASE_PROB_range']
+    site_overrides['FIRE_BASE_PROB'] = rng.uniform(low=fire_prob_range[0], high=fire_prob_range[1])
+    
+    insect_prob_range = config['INSECT_BASE_PROB_range']
+    site_overrides['INSECT_BASE_PROB'] = rng.uniform(low=insect_prob_range[0], high=insect_prob_range[1])
+    
+    insect_mortality_range = config['INSECT_MORTALITY_RATE_range']
+    site_overrides['INSECT_MORTALITY_RATE'] = rng.uniform(low=insect_mortality_range[0], high=insect_mortality_range[1])
+    
+    # Fixed initial state defaults (used when env config sets use_fixed_site_initials=True)
+    site_overrides['initial_density'] = rng.uniform(low=INITIAL_DENSITY_RANGE[0], high=INITIAL_DENSITY_RANGE[1])
+    site_overrides['initial_conifer_fraction'] = rng.uniform(low=INITIAL_CONIFER_FRACTION_RANGE[0], high=INITIAL_CONIFER_FRACTION_RANGE[1])
+    site_overrides['initial_biomass_carbon'] = rng.uniform(low=INITIAL_BIOMASS_CARBON_RANGE[0], high=INITIAL_BIOMASS_CARBON_RANGE[1])
+    site_overrides['initial_soil_carbon'] = rng.uniform(low=INITIAL_SOIL_CARBON_RANGE[0], high=INITIAL_SOIL_CARBON_RANGE[1])
+    
+    return site_overrides
 
 
