@@ -349,6 +349,9 @@ def load_simple_yaml(path: str) -> dict:
     return root
 
 
+
+
+
 def get_action_from_model(model, obs_tensor, acc_reward, weight):
     """Gets an action from a model, handling different agent APIs.
     
@@ -369,6 +372,14 @@ def get_action_from_model(model, obs_tensor, acc_reward, weight):
         if hasattr(model, "act"):  # Unified interface if available
             return int(model.act(obs_tensor, acc_reward=acc_reward, eval_mode=True))
         
+        elif hasattr(model, 'get_policy_net'):  # PPO agent - use get_policy_net
+            policy_net = model.get_policy_net()
+            if policy_net is not None:
+                # PPO policy expects obs_tensor directly, no acc_reward needed
+                logits = policy_net.distribution(obs_tensor)[0].logits
+                return int(torch.argmax(logits, dim=1).item()) if bool(const.EVAL_USE_ARGMAX_ACTIONS) \
+                         else int(torch.distributions.Categorical(logits=logits).sample().item())
+        
         elif hasattr(model, "_act"):  # PCN's private API
             # PCN is goal-conditioned: map preference weight to desired return
             # Use constants for maximum return estimates
@@ -385,17 +396,12 @@ def get_action_from_model(model, obs_tensor, acc_reward, weight):
             
             return int(model._act(obs_tensor.numpy(), model.desired_return, model.desired_horizon, eval_mode=True))
         
-        elif hasattr(model, 'get_policy_net'):  # EUPG agent - use get_policy_net
-            policy_net = model.get_policy_net()
-            if policy_net is not None:
-                logits = policy_net.forward(obs_tensor, acc_reward=acc_reward)
-                return int(torch.argmax(logits, dim=1).item()) if bool(const.EVAL_USE_ARGMAX_ACTIONS) \
-                         else int(torch.distributions.Categorical(logits=logits).sample().item())
-            else:
-                # Fallback to policy_forward
-                logits = model.policy_forward(obs_tensor, acc_reward=acc_reward)  # type: ignore
-                return int(torch.argmax(logits, dim=1).item()) if bool(const.EVAL_USE_ARGMAX_ACTIONS) \
-                         else int(torch.distributions.Categorical(logits=logits).sample().item())
+        elif hasattr(model, 'policy_forward'):  # EUPG agent - use policy_forward
+            logits = model.policy_forward(obs_tensor, acc_reward=acc_reward)  # type: ignore
+            return int(torch.argmax(logits, dim=1).item()) if bool(const.EVAL_USE_ARGMAX_ACTIONS) \
+                     else int(torch.distributions.Categorical(logits=logits).sample().item())
+        
+
         
         else:
             # Fallback to policy_forward

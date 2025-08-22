@@ -83,6 +83,8 @@ def _evaluate_model_periodic(model, env_config, agent_mod, run_dir, run_id, curr
                 # Set preference weight
                 unwrapped_eval_env.current_preference_weight = float(weight[0])
                 
+
+                
                 # Derive deterministic seed
                 per_episode_seed = int(1000003 * weight_idx + episode_num)
                 obs, info = eval_env.reset(seed=per_episode_seed)
@@ -285,7 +287,6 @@ def _train_with_periodic_saving(model, unwrapped_env, total_timesteps, agent_mod
                         if hasattr(model, 'save'):
                             # PCN agent - use torch.save directly (more reliable)
                             try:
-                                import torch
                                 # Temporarily remove the wrapper to avoid pickling issues
                                 original_env = model.env
                                 model.env = unwrapped_env
@@ -455,6 +456,7 @@ def train(
     save_interval: int = 100,
     eval_interval: int = 1000,
     n_eval_episodes: int = 10,
+    use_plant_gate: bool = False,
 ):
     profiler.start_timer('total_training')
 
@@ -576,7 +578,7 @@ def train(
 
     # Create model via agent module
     if algo_key not in AGENTS:
-        raise ValueError(f"Unknown algorithm '{algorithm}'. Choose from eupg, pcn, chm, gpi_ls.")
+        raise ValueError(f"Unknown algorithm '{algorithm}'. Choose from eupg, pcn, ppo.")
     agent_mod = AGENTS[algo_key]
     # Phase already set above
     # Pass through the agent hyperparameters
@@ -589,15 +591,25 @@ def train(
         pre_agent = (loaded_cfg.get('agent', {}) if isinstance(loaded_cfg, dict) else {})
     else:
         pre_agent = locals().get('pre_config', {}).get('agent', {}) if isinstance(locals().get('pre_config', {}), dict) else {}
+    # Check if the agent's create function accepts use_plant_gate parameter
+    create_sig = inspect.signature(agent_mod.create)
+    create_kwargs = {
+        'weights': pre_agent.get('weights'),
+        'gamma': pre_agent.get('gamma'),
+        'learning_rate': pre_agent.get('learning_rate'),
+        'net_arch': pre_agent.get('net_arch'),
+        'run_dir_name': run_dir_name,
+    }
+    
+    # Only pass use_plant_gate if the agent accepts it
+    if 'use_plant_gate' in create_sig.parameters:
+        create_kwargs['use_plant_gate'] = use_plant_gate
+    
     model = agent_mod.create(
         env,
         unwrapped_env,
         use_wandb,
-        weights=pre_agent.get('weights'),
-        gamma=pre_agent.get('gamma'),
-        learning_rate=pre_agent.get('learning_rate'),
-        net_arch=pre_agent.get('net_arch'),
-        run_dir_name=run_dir_name,
+        **create_kwargs,
     )
 
     # If resuming, load the saved model parameters before continuing training
@@ -662,6 +674,8 @@ def train(
     if not resume_mode:
         save_run_config(env, algo_key, model, total_timesteps)
 
+
+
     # Train with signature robustness
     train_sig = inspect.signature(model.train)
     # During resume, treat total_timesteps as "extra timesteps"; otherwise, it's absolute
@@ -694,6 +708,13 @@ def train(
 
     total_training_time = profiler.end_timer('total_training')
     print(f"Total training time: {total_training_time:.3f} seconds")
+    
+    # Check if envelope model has any policies learned
+    if hasattr(model, "has_any_policy") and callable(getattr(model, "has_any_policy")):
+        if not model.has_any_policy():
+            print("[Envelope] Warning: archive is empty after training. "
+                  "Increase --timesteps (e.g., 50k+), or reduce warmup/min-buffer so a policy is stored.")
+    
     profiler.print_summary()
     # Save and plot profiling
     from datetime import datetime as _dt
@@ -820,7 +841,7 @@ def evaluate(
 
     # Agent constructor
     if algo_key not in AGENTS:
-        raise ValueError(f"Unknown algorithm '{algorithm}'. Choose from eupg, pcn, chm, gpi_ls.")
+        raise ValueError(f"Unknown algorithm '{algorithm}'. Choose from eupg, pcn, ppo.")
     agent_mod = AGENTS[algo_key]
 
     # Build model for inference, applying optional overrides from config
@@ -925,6 +946,14 @@ def evaluate(
                         pass
                 # Also set on the unwrapped env
                 unwrapped_env.current_preference_weight = float(weight[0])
+                
+                # Set the eval weight for envelope/coverage models
+                try:
+                    from .envelope_agent import _maybe_set_envelope_eval_weight
+                    _maybe_set_envelope_eval_weight(model, weight)
+                except Exception:
+                    pass
+                
                 # Derive a deterministic per-episode seed so baselines and agent share initial conditions/weather
                 per_episode_seed = int(1000003 * weight_idx + episode_num)
                 obs, info = venv.reset(seed=per_episode_seed)

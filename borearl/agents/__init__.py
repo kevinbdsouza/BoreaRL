@@ -14,15 +14,26 @@ except Exception as _e:
     pass
 
 try:
-    from . import chm_agent  # type: ignore
-    AGENTS['chm'] = chm_agent
+    from . import ppo_gated  # type: ignore
+    AGENTS['ppo'] = ppo_gated
 except Exception as _e:
-    # CHM might not be available in some morl-baselines versions
     pass
 
 try:
-    from . import gpi_ls_agent  # type: ignore
-    AGENTS['gpi_ls'] = gpi_ls_agent
+    from . import envelope_agent  # type: ignore
+    AGENTS['envelope'] = envelope_agent
+except Exception as _e:
+    pass
+
+try:
+    from . import pgmorl_agent  # type: ignore
+    AGENTS['pgmorl'] = pgmorl_agent
+except Exception as _e:
+    pass
+
+try:
+    from . import sec_pcn_agent  # type: ignore
+    AGENTS['sec-pcn'] = sec_pcn_agent
 except Exception as _e:
     pass
 

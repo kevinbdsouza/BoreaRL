@@ -98,7 +98,7 @@ STOCK_BONUS_MULTIPLIER = 0.0
 # new preference weight. The scalar preference weight used is the
 # first element of `EUPG_DEFAULT_WEIGHTS`.
 EUPG_DEFAULT_WEIGHTS = (0.5, 0.5)
-USE_FIXED_PREFERENCE_DEFAULT = False
+USE_FIXED_PREFERENCE_DEFAULT = True
 INCLUDE_SITE_PARAMS_IN_OBS_DEFAULT = True  # Generalist-only observation augmentation
 USE_FIXED_SITE_INITIALS_DEFAULT = False   # If True, use fixed site defaults for initial state instead of sampling ranges
 

@@ -42,6 +42,7 @@ def main():
     parser.add_argument("--plot_profile", type=str, default=None, help="Path to saved profiling JSON to plot. If omitted, plots current profiler data.")
     parser.add_argument("--baseline", action="store_true", help="Run baselines and counterfactual analysis and exit.")
     parser.add_argument("--train_then_eval", action="store_true", help="Train and then immediately evaluate in the same run.")
+    parser.add_argument("--use_plant_gate", action="store_true", help="Enable plant gate for PPO agent (only applies to PPO agent).")
     args = parser.parse_args()
 
     #args.train_then_eval = True
@@ -74,6 +75,7 @@ def main():
             save_interval=args.save_interval,
             eval_interval=args.eval_interval,
             n_eval_episodes=args.n_eval_episodes,
+            use_plant_gate=args.use_plant_gate,
         )
         # Resolve run directory
         run_dir = os.path.join("logs", args.run_dir_name) if args.run_dir_name else os.environ.get("BOREARL_RUN_DIR")
@@ -122,6 +124,7 @@ def main():
             save_interval=args.save_interval,
             eval_interval=args.eval_interval,
             n_eval_episodes=args.n_eval_episodes,
+            use_plant_gate=args.use_plant_gate,
         )
     elif args.evaluate:
         # Resolve run directory

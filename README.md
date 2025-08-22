@@ -11,7 +11,7 @@ BoreaRL is a physically-grounded multi-objective reinforcement learning benchmar
 - `borearl/env/forest_env.py`: Multi-objective Gym environment (`ForestEnv`) and Gym registration (`ForestEnv-v0`).
 - `borearl/constants.py`: Shared RL-level constants used by the environment and training.
 - `borearl/agents/runner.py`: Unified training/evaluation entrypoints.
-- `borearl/agents/eupg_agent.py`, `pcn_agent.py`, `chm_agent.py`, `gpi_ls_agent.py`: Agent-specific factories.
+- `borearl/agents/eupg_agent.py`, `pcn_agent.py`, `ppo_gated.py`: Agent-specific factories.
 - `borearl/agents/common.py`: Shared helpers for env and config.
 - `borearl/agents/baseline.py`: Baselines and counterfactual sensitivity.
 - `borearl/utils/`: Profiling and plotting utilities.
