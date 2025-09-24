@@ -20,22 +20,19 @@ except Exception as _e:
     pass
 
 try:
-    from . import envelope_agent  # type: ignore
-    AGENTS['envelope'] = envelope_agent
-except Exception as _e:
-    pass
-
-try:
-    from . import pgmorl_agent  # type: ignore
-    AGENTS['pgmorl'] = pgmorl_agent
-except Exception as _e:
-    pass
-
-try:
     from . import sec_pcn_agent  # type: ignore
     AGENTS['sec-pcn'] = sec_pcn_agent
 except Exception as _e:
     pass
 
+try:
+    from . import curriculum_ppo_agent  # type: ignore
+    AGENTS['curriculum-ppo'] = curriculum_ppo_agent
+except Exception as _e:
+    pass
 
-
+try:
+    from . import site_selection_ppo_agent  # type: ignore
+    AGENTS['site-selection-ppo'] = site_selection_ppo_agent
+except Exception as _e:
+    pass

@@ -43,6 +43,10 @@ def main():
     parser.add_argument("--baseline", action="store_true", help="Run baselines and counterfactual analysis and exit.")
     parser.add_argument("--train_then_eval", action="store_true", help="Train and then immediately evaluate in the same run.")
     parser.add_argument("--use_plant_gate", action="store_true", help="Enable plant gate for PPO agent (only applies to PPO agent).")
+    parser.add_argument("--curriculum_threshold", type=float, default=0.5, help="Threshold for curriculum episode selection (only applies to curriculum-ppo agent).")
+    parser.add_argument("--site_selection_threshold", type=float, default=0.5, help="Threshold for site selection episode selection (only applies to site-selection-ppo agent).")
+    parser.add_argument("--site_selection_lr", type=float, default=1e-4, help="Learning rate for site selection network (only applies to site-selection-ppo agent).")
+    parser.add_argument("--site_selection_coef", type=float, default=0.1, help="Coefficient for site selection loss (only applies to site-selection-ppo agent).")
     args = parser.parse_args()
 
     #args.train_then_eval = True
@@ -76,6 +80,10 @@ def main():
             eval_interval=args.eval_interval,
             n_eval_episodes=args.n_eval_episodes,
             use_plant_gate=args.use_plant_gate,
+            curriculum_threshold=args.curriculum_threshold,
+            site_selection_threshold=args.site_selection_threshold,
+            site_selection_lr=args.site_selection_lr,
+            site_selection_coef=args.site_selection_coef,
         )
         # Resolve run directory
         run_dir = os.path.join("logs", args.run_dir_name) if args.run_dir_name else os.environ.get("BOREARL_RUN_DIR")
@@ -125,6 +133,10 @@ def main():
             eval_interval=args.eval_interval,
             n_eval_episodes=args.n_eval_episodes,
             use_plant_gate=args.use_plant_gate,
+            curriculum_threshold=args.curriculum_threshold,
+            site_selection_threshold=args.site_selection_threshold,
+            site_selection_lr=args.site_selection_lr,
+            site_selection_coef=args.site_selection_coef,
         )
     elif args.evaluate:
         # Resolve run directory

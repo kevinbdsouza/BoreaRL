@@ -45,6 +45,17 @@ def _evaluate_model_periodic(model, env_config, agent_mod, run_dir, run_id, curr
     # Create evaluation environment - use a completely separate environment instance
     # to avoid interfering with the main training step counter
     eval_env = make_env(eval_env_config)
+    
+    # Mark the evaluation environment to prevent step counting
+    # Set the flag on all levels of the environment wrapper chain
+    current_env = eval_env
+    while hasattr(current_env, 'env'):
+        setattr(current_env, 'in_evaluation', True)
+        current_env = current_env.env
+    
+    # Also set on the base environment
+    setattr(current_env, 'in_evaluation', True)
+    
     unwrapped_eval_env = eval_env
     seen = set()
     while hasattr(unwrapped_eval_env, "env"):
@@ -285,13 +296,9 @@ def _train_with_periodic_saving(model, unwrapped_env, total_timesteps, agent_mod
                     # Save the model
                     if getattr(agent_mod, 'supports_single_policy_eval')():
                         if hasattr(model, 'save'):
-                            # PCN agent - use torch.save directly (more reliable)
+                            # Use the model's own save method (PCN, Site Selection PPO, etc.)
                             try:
-                                # Temporarily remove the wrapper to avoid pickling issues
-                                original_env = model.env
-                                model.env = unwrapped_env
-                                torch.save(model, checkpoint_path)
-                                model.env = original_env  # Restore the wrapper
+                                model.save(checkpoint_path)
                                 print(f"Saved model checkpoint at episode {episode_num}: {checkpoint_path}")
                             except Exception as e:
                                 print(f"Error saving model checkpoint at episode {episode_num}: {e}")
@@ -416,6 +423,15 @@ def _train_with_periodic_saving(model, unwrapped_env, total_timesteps, agent_mod
             # PCN agent requires eval_env and ref_point
             from borearl.agents.common import make_env
             eval_env = make_env(env_config)  # Pass the same config used for training
+            
+            # Mark the PCN evaluation environment to prevent step counting
+            # Set the flag on all levels of the environment wrapper chain
+            current_env = eval_env
+            while hasattr(current_env, 'env'):
+                setattr(current_env, 'in_evaluation', True)
+                current_env = current_env.env
+            # Also set on the base environment
+            setattr(current_env, 'in_evaluation', True)
             # Use configurable reference point for hypervolume calculation
             ref_point = np.array(const.PCN_REFERENCE_POINT)
             
@@ -441,6 +457,12 @@ def _train_with_periodic_saving(model, unwrapped_env, total_timesteps, agent_mod
     
     except TrainingComplete as e:
         print(f"Training successfully halted: {e}")
+    except RuntimeError as e:
+        if str(e) == "HARD_STEP_CAP_REACHED":
+            print(f"Training halted due to hard step cap reached: {e}")
+        else:
+            # Re-raise other RuntimeErrors
+            raise
     
     # Manually trigger a final save after training halts
     final_episode = getattr(unwrapped_env, 'episode_count', 0)
@@ -457,6 +479,10 @@ def train(
     eval_interval: int = 1000,
     n_eval_episodes: int = 10,
     use_plant_gate: bool = False,
+    curriculum_threshold: float = 0.5,
+    site_selection_threshold: float = 0.5,
+    site_selection_lr: float = 1e-4,
+    site_selection_coef: float = 0.1,
 ):
     profiler.start_timer('total_training')
 
@@ -605,6 +631,18 @@ def train(
     if 'use_plant_gate' in create_sig.parameters:
         create_kwargs['use_plant_gate'] = use_plant_gate
     
+    # Only pass curriculum_threshold if the agent accepts it
+    if 'curriculum_threshold' in create_sig.parameters:
+        create_kwargs['curriculum_threshold'] = curriculum_threshold
+    
+    # Only pass site selection parameters if the agent accepts them
+    if 'site_selection_threshold' in create_sig.parameters:
+        create_kwargs['site_selection_threshold'] = site_selection_threshold
+    if 'site_selection_lr' in create_sig.parameters:
+        create_kwargs['site_selection_lr'] = site_selection_lr
+    if 'site_selection_coef' in create_sig.parameters:
+        create_kwargs['site_selection_coef'] = site_selection_coef
+    
     model = agent_mod.create(
         env,
         unwrapped_env,
@@ -687,16 +725,33 @@ def train(
     fname = getattr(agent_mod, 'default_model_filename')()
     saved_model_path = None
     if getattr(agent_mod, 'supports_single_policy_eval')():
-        if hasattr(model, 'get_policy_net'):
+        if hasattr(model, 'save'):
+            # Use the model's own save method (Site Selection PPO, etc.)
+            saved_model_path = os.path.join(models_dir, fname)
+            try:
+                model.save(saved_model_path)
+            except Exception as e:
+                print(f"Error saving model with model.save(): {e}")
+                # Fallback to policy network save
+                if hasattr(model, 'get_policy_net'):
+                    policy = model.get_policy_net()
+                    if policy is not None:
+                        torch.save(policy.state_dict(), saved_model_path)
+        elif hasattr(model, 'get_policy_net'):
             # EUPG agent - save policy network
             policy = model.get_policy_net()
             if policy is not None:
                 saved_model_path = os.path.join(models_dir, fname)
                 torch.save(policy.state_dict(), saved_model_path)
         elif hasattr(model, 'model'):
-            # PCN agent - save the model
+            # PCN agent — DO NOT overwrite the full-object checkpoint at `fname`.
+            # Keep the last checkpoint saved by `_train_with_periodic_saving(...)`.
             saved_model_path = os.path.join(models_dir, fname)
-            torch.save(model.model.state_dict(), saved_model_path)
+            # Optional: if you want a lightweight artifact too, save it under a DIFFERENT name:
+            try:
+                torch.save(model.model.state_dict(), os.path.join(models_dir, "pcn_policy_state_only.pth"))
+            except Exception:
+                pass
     else:
         # Coverage methods: persist policy set if helper is provided
         if hasattr(agent_mod, 'save_policy_set'):
@@ -709,11 +764,7 @@ def train(
     total_training_time = profiler.end_timer('total_training')
     print(f"Total training time: {total_training_time:.3f} seconds")
     
-    # Check if envelope model has any policies learned
-    if hasattr(model, "has_any_policy") and callable(getattr(model, "has_any_policy")):
-        if not model.has_any_policy():
-            print("[Envelope] Warning: archive is empty after training. "
-                  "Increase --timesteps (e.g., 50k+), or reduce warmup/min-buffer so a policy is stored.")
+
     
     profiler.print_summary()
     # Save and plot profiling
@@ -794,9 +845,11 @@ def evaluate(
     # Wandb disabled for evaluation to prevent hanging issues
     use_wandb = False
 
-    # Ensure evaluation is not affected by any training step caps
+    # Disable step caps during evaluation - evaluation should run without step limits
     if "BOREARL_MAX_TOTAL_STEPS" in os.environ:
         os.environ.pop("BOREARL_MAX_TOTAL_STEPS", None)
+    if "BOREARL_CURRENT_RUN_STEPS" in os.environ:
+        os.environ.pop("BOREARL_CURRENT_RUN_STEPS", None)
     # Reset the global step counter for evaluation
     os.environ["BOREARL_GLOBAL_STEP_COUNT"] = "0"
 
@@ -910,7 +963,20 @@ def evaluate(
         else:
             raise RuntimeError(f"Agent {algorithm} does not support model loading for evaluation")
 
-    venv = MOSyncVectorEnv([lambda: make_env(env_config) for _ in range(1)])
+    # Create evaluation environments and mark them to prevent step counting
+    def create_eval_env():
+        env = make_env(env_config)
+        # Mark the evaluation environment to prevent step counting
+        # Set the flag on all levels of the environment wrapper chain
+        current_env = env
+        while hasattr(current_env, 'env'):
+            setattr(current_env, 'in_evaluation', True)
+            current_env = current_env.env
+        # Also set on the base environment
+        setattr(current_env, 'in_evaluation', True)
+        return env
+    
+    venv = MOSyncVectorEnv([create_eval_env for _ in range(1)])
     eval_weights = default_eval_weights(env_config)
 
     results = {'weights': [], 'carbon_objectives': [], 'thaw_objectives': [], 'scalarized_rewards': []}
@@ -947,12 +1013,7 @@ def evaluate(
                 # Also set on the unwrapped env
                 unwrapped_env.current_preference_weight = float(weight[0])
                 
-                # Set the eval weight for envelope/coverage models
-                try:
-                    from .envelope_agent import _maybe_set_envelope_eval_weight
-                    _maybe_set_envelope_eval_weight(model, weight)
-                except Exception:
-                    pass
+
                 
                 # Derive a deterministic per-episode seed so baselines and agent share initial conditions/weather
                 per_episode_seed = int(1000003 * weight_idx + episode_num)

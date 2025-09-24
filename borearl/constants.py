@@ -43,7 +43,7 @@ MAX_DROUGHT_INDEX = 100.0
 MAX_DENSITY_CHANGE = float(max(abs(x) for x in DENSITY_ACTIONS))
 
 # Asymmetric thaw reward
-WARMING_PENALTY_FACTOR = 5.0
+WARMING_PENALTY_FACTOR = 2.5 #5.0
 
 # Contrast thaw calculation flag
 # When True, use contrast thaw calculation instead of normalized asymmetric thaw
@@ -71,7 +71,7 @@ SAFE_MIN_DENSITY_THINNING = 150
 
 # Reward normalization constants
 MAX_CARBON_CHANGE_PER_YEAR = 2.0
-MAX_THAW_DEGREE_DAYS_PER_YEAR = 40.0
+MAX_THAW_DEGREE_DAYS_PER_YEAR = 40.0 #40
 
 # PCN maximum return estimates for goal-conditioned evaluation
 # These represent conservative estimates for 50-year episodes

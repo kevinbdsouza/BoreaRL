@@ -16,6 +16,52 @@ from ..utils.profiling import profiler
 from ..utils.plotting import plot_profiling_statistics
 
 
+# --- GLOBAL HARD STEP CAP WRAPPER --------------------------------------------
+class _HardStepCap(gym.Wrapper):
+    """Global hard-cap on total steps across all envs in the process.
+
+    Increments BOREARL_GLOBAL_STEP_COUNT on every .step().
+    If count >= cap (from BOREARL_CURRENT_RUN_STEPS or BOREARL_MAX_TOTAL_STEPS),
+    raises a RuntimeError that we catch upstream to stop training immediately.
+    """
+    _CNT_KEY = "BOREARL_GLOBAL_STEP_COUNT"
+    _CAP_KEYS = ("BOREARL_CURRENT_RUN_STEPS", "BOREARL_MAX_TOTAL_STEPS")
+    _RAISE_MSG = "HARD_STEP_CAP_REACHED"
+
+    def step(self, action):
+        obs, rew, term, trunc, info = self.env.step(action)
+
+        import os as _os
+        
+        # Skip counting if this is an evaluation environment
+        base = self.env
+        if getattr(base, "in_evaluation", False):
+            return obs, rew, term, trunc, info
+        
+        # Increment global step counter
+        try:
+            cnt = int(_os.environ.get(self._CNT_KEY, "0"))
+        except Exception:
+            cnt = 0
+        cnt += 1
+        _os.environ[self._CNT_KEY] = str(cnt)
+
+        # Determine cap (prefer current-run cap, else total cap)
+        cap = 0
+        for k in self._CAP_KEYS:
+            v = _os.environ.get(k)
+            if v and str(v).isdigit():
+                cap = int(v)
+                break
+
+        if cap > 0 and cnt >= cap:
+            # Raise a recognizable error so caller can abort immediately
+            raise RuntimeError(self._RAISE_MSG)
+
+        return obs, rew, term, trunc, info
+# -----------------------------------------------------------------------------
+
+
 def yaml_format_scalar(value: Any) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
@@ -70,7 +116,12 @@ def make_env(env_config: dict | None = None):
     if env_config.get('physics_backend', const.PHYSICS_BACKEND_DEFAULT) == 'numba':
         env_config.setdefault('jit_solver_max_iters', int(jit_iters_env) if jit_iters_env else const.JIT_SOLVER_MAX_ITERS_DEFAULT)
         env_config.setdefault('stability_update_interval_steps', int(stab_interval_env) if stab_interval_env else const.STABILITY_UPDATE_INTERVAL_STEPS_DEFAULT)
-    return gym.make("ForestEnv-v0", config=env_config, disable_env_checker=True)
+    
+    env = gym.make("ForestEnv-v0", config=env_config, disable_env_checker=True)
+
+    # Always wrap with a global hard step cap so *any* env (train or eval) respects --timesteps
+    env = _HardStepCap(env)
+    return env
 
 
 def set_env_preference(env, pref: float):
@@ -353,61 +404,143 @@ def load_simple_yaml(path: str) -> dict:
 
 
 def get_action_from_model(model, obs_tensor, acc_reward, weight):
-    """Gets an action from a model, handling different agent APIs.
-    
-    Args:
-        model: The model to get action from
-        obs_tensor: Observation tensor
-        acc_reward: Accumulated reward tensor
-        weight: Preference weight vector [carbon_weight, thaw_weight]
-        
-    Returns:
-        int: Selected action
-        
-    Raises:
-        NotImplementedError: If model does not have a recognized action method
-    """
+    """Gets an action from a model, handling different agent APIs."""
+
+    def _to_scalar_action(a):
+        # Normalize any common return types to an int
+        if a is None:
+            return None
+        import numpy as _np
+        import torch as _torch
+        if isinstance(a, (tuple, list)):
+            a = a[0]
+        if isinstance(a, _torch.Tensor):
+            if a.numel() == 0:
+                return None
+            return int(a.view(-1)[0].detach().cpu().item())
+        if isinstance(a, _np.generic):
+            return int(_np.asarray(a).reshape(-1)[0].item())
+        if isinstance(a, _np.ndarray):
+            if a.size == 0:
+                return None
+            return int(_np.asarray(a).reshape(-1)[0].item())
+        try:
+            return int(a)
+        except Exception:
+            return None
+
     with torch.no_grad():
-        # Handle different agent types with robust inference
-        if hasattr(model, "act"):  # Unified interface if available
-            return int(model.act(obs_tensor, acc_reward=acc_reward, eval_mode=True))
-        
-        elif hasattr(model, 'get_policy_net'):  # PPO agent - use get_policy_net
+        # ---- PCN: goal-conditioned path FIRST ----
+        if hasattr(model, "set_desired_return_and_horizon"):
+            # Map preference weight -> desired multi-objective return & horizon
+            target_return = np.array([
+                float(weight[0]) * const.MAX_CARBON_RETURN,
+                float(weight[1]) * const.MAX_THAW_RETURN,
+            ], dtype=np.float32)
+            target_horizon = int(const.EPISODE_LENGTH_YEARS)
+            try:
+                model.set_desired_return_and_horizon(target_return, target_horizon)
+            except Exception:
+                pass
+
+            # Prefer the internal PCN act that takes desired return/horizon
+            try:
+                if hasattr(model, "_act"):
+                    a = model._act(
+                        obs_tensor.detach().cpu().numpy(),
+                        getattr(model, "desired_return", target_return),
+                        getattr(model, "desired_horizon", target_horizon),
+                        eval_mode=True,
+                    )
+                    a = _to_scalar_action(a)
+                    if a is not None:
+                        return a
+
+                if hasattr(model, "act"):
+                    # Try PCN-style signature first
+                    try:
+                        a = model.act(
+                            obs_tensor.detach().cpu().numpy(),
+                            getattr(model, "desired_return", target_return),
+                            getattr(model, "desired_horizon", target_horizon),
+                            eval_mode=True,
+                        )
+                    except TypeError:
+                        # Fall back to EUPG-style signature if the above fails
+                        a = model.act(obs_tensor, acc_reward=acc_reward, eval_mode=True)
+                    a = _to_scalar_action(a)
+                    if a is not None:
+                        return a
+            except Exception:
+                # If anything goes wrong above, fall through to logits path
+                pass
+
+            # Last resort for PCN: use logits if exposed
+            if hasattr(model, "policy_forward"):
+                logits = model.policy_forward(obs_tensor, acc_reward=acc_reward)
+                if bool(const.EVAL_USE_ARGMAX_ACTIONS):
+                    return int(torch.argmax(logits, dim=1).item())
+                return int(torch.distributions.Categorical(logits=logits).sample().item())
+
+        # ---- Site Selection PPO: with site selection during evaluation ----
+        if hasattr(model, "should_select_episode") and hasattr(model, "predict") and hasattr(model, "site_selection_optimizer"):
+            # This is a site selection PPO model - use predict method with site selection during evaluation
+            action_result = model.predict(obs_tensor, deterministic=bool(const.EVAL_USE_ARGMAX_ACTIONS))
+            # predict returns (action, selection_prob) tuple
+            if isinstance(action_result, tuple):
+                action, selection_prob = action_result
+                a = _to_scalar_action(action)
+                if a is not None:
+                    return a
+            else:
+                # Fallback if predict doesn't return tuple
+                a = _to_scalar_action(action_result)
+                if a is not None:
+                    return a
+
+        # ---- Curriculum PPO: direct action prediction ----
+        if hasattr(model, "should_select_episode") and hasattr(model, "predict"):
+            # This is a curriculum PPO model - use predict method (no site selection during evaluation)
+            action_result = model.predict(obs_tensor, deterministic=bool(const.EVAL_USE_ARGMAX_ACTIONS))
+            # predict now returns just the action (no selection probability)
+            a = _to_scalar_action(action_result)
+            if a is not None:
+                return a
+
+        # ---- Generic paths (EUPG/PPO/etc.) ----
+        if hasattr(model, "act"):
+            a = model.act(obs_tensor, acc_reward=acc_reward, eval_mode=True)
+            a = _to_scalar_action(a)
+            if a is not None:
+                return a
+
+        if hasattr(model, "get_policy_net"):
             policy_net = model.get_policy_net()
             if policy_net is not None:
-                # PPO policy expects obs_tensor directly, no acc_reward needed
-                logits = policy_net.distribution(obs_tensor)[0].logits
-                return int(torch.argmax(logits, dim=1).item()) if bool(const.EVAL_USE_ARGMAX_ACTIONS) \
-                         else int(torch.distributions.Categorical(logits=logits).sample().item())
-        
-        elif hasattr(model, "_act"):  # PCN's private API
-            # PCN is goal-conditioned: map preference weight to desired return
-            # Use constants for maximum return estimates
-            # Create desired return based on the current preference weight
-            target_return = np.array([
-                weight[0] * const.MAX_CARBON_RETURN, 
-                weight[1] * const.MAX_THAW_RETURN
-            ])
-            target_horizon = const.EPISODE_LENGTH_YEARS  # 50 years
-            
-            # Set the desired goal for this specific evaluation
-            if hasattr(model, "set_desired_return_and_horizon"):
-                model.set_desired_return_and_horizon(target_return, target_horizon)
-            
-            return int(model._act(obs_tensor.numpy(), model.desired_return, model.desired_horizon, eval_mode=True))
-        
-        elif hasattr(model, 'policy_forward'):  # EUPG agent - use policy_forward
-            logits = model.policy_forward(obs_tensor, acc_reward=acc_reward)  # type: ignore
-            return int(torch.argmax(logits, dim=1).item()) if bool(const.EVAL_USE_ARGMAX_ACTIONS) \
-                     else int(torch.distributions.Categorical(logits=logits).sample().item())
-        
+                # Check if distribution method needs acc_reward parameter
+                import inspect
+                sig = inspect.signature(policy_net.distribution)
+                if 'acc_reward' in sig.parameters:
+                    dist = policy_net.distribution(obs_tensor, acc_reward=acc_reward)
+                else:
+                    dist = policy_net.distribution(obs_tensor)
+                
+                # Handle both tuple and direct Categorical return
+                if isinstance(dist, tuple):
+                    logits = dist[0].logits
+                else:
+                    logits = dist.logits
+                if bool(const.EVAL_USE_ARGMAX_ACTIONS):
+                    return int(torch.argmax(logits, dim=1).item())
+                return int(torch.distributions.Categorical(logits=logits).sample().item())
 
-        
-        else:
-            # Fallback to policy_forward
+        if hasattr(model, "policy_forward"):
             logits = model.policy_forward(obs_tensor, acc_reward=acc_reward)  # type: ignore
-            return int(torch.argmax(logits, dim=1).item()) if bool(const.EVAL_USE_ARGMAX_ACTIONS) \
-                     else int(torch.distributions.Categorical(logits=logits).sample().item())
+            if bool(const.EVAL_USE_ARGMAX_ACTIONS):
+                return int(torch.argmax(logits, dim=1).item())
+            return int(torch.distributions.Categorical(logits=logits).sample().item())
+
+        raise NotImplementedError("Could not produce an action from model (no compatible API found).")
 
 
 

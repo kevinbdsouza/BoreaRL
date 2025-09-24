@@ -68,6 +68,12 @@ def run_counterfactual_sensitivity(
     
     try:
         env = make_env(env_config)
+        # Mark baseline environment as evaluation to prevent step counting
+        current_env = env
+        while hasattr(current_env, 'env'):
+            setattr(current_env, 'in_evaluation', True)
+            current_env = current_env.env
+        setattr(current_env, 'in_evaluation', True)
     finally:
         if prev_phase is not None:
             os.environ['BOREARL_PHASE'] = prev_phase
@@ -182,6 +188,12 @@ def run_baselines(output_dir: str = 'logs', fixed_preference: float = 0.5):
     
     try:
         env = make_env(env_config)
+        # Mark baseline environment as evaluation to prevent step counting
+        current_env = env
+        while hasattr(current_env, 'env'):
+            setattr(current_env, 'in_evaluation', True)
+            current_env = current_env.env
+        setattr(current_env, 'in_evaluation', True)
     finally:
         if prev_phase is not None:
             os.environ['BOREARL_PHASE'] = prev_phase
@@ -238,6 +250,12 @@ def run_baseline_pair_for_seed(
     
     try:
         env = make_env(env_config)
+        # Mark baseline environment as evaluation to prevent step counting
+        current_env = env
+        while hasattr(current_env, 'env'):
+            setattr(current_env, 'in_evaluation', True)
+            current_env = current_env.env
+        setattr(current_env, 'in_evaluation', True)
     finally:
         if prev_phase is not None:
             os.environ['BOREARL_PHASE'] = prev_phase

@@ -167,6 +167,10 @@ class RolloutBuffer:
 
     def ready(self) -> bool:
         return self.ptr >= self.max_size
+    
+    def reset(self):
+        """Reset the buffer pointer to start collecting new rollout data"""
+        self.ptr = 0
 
     def compute_returns_advantages(self, last_value, gamma=0.99, gae_lambda=0.95):
         adv = torch.zeros_like(self.rewards, device=self.device)
