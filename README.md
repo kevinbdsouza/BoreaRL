@@ -1,6 +1,8 @@
 # BoreaRL
 BoreaRL is a physically-grounded multi-objective reinforcement learning benchmark for boreal forest management, simulating coupled energy, carbon, and water fluxes to train agents that balance carbon sequestration with permafrost preservation.
 
+![BoreaRL Introduction](data/intro_boreal.png)
+
 ### Why BoreaRL?
 - **Physically-based simulator**: A class-based forest energy, water, and carbon model (`ForestSimulator`) with canopy, trunk space, soil (surface/deep), atmosphere, and snowpack, driven by latitude-aware climate and stochastic weather.
 - **Multi-objective RL**: Learn to maximize carbon benefits while minimizing permafrost thaw using a 2D reward vector and preference-based scalarization (EUPG from `morl_baselines`).
