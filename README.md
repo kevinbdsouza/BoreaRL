@@ -126,5 +126,13 @@ python -c "from borearl.utils.plotting import plot_profiling_statistics; plot_pr
 ## Citation
 If you use BoreaRL in your research, please cite this repository. A formal citation will be added once a preprint is available.
 
+## Future Work
+- **JAX Port**: We plan to port the environment to JAX to enable massive parallelization on GPUs/TPUs, allowing for end-to-end vectorization and significantly faster training.
+- **Multi-objective Extensions**: Incorporating economic objectives and biodiversity metrics.
+- **Real-world Validation**: Calibrating against historical data and expert validation.
+
+## Contributing
+We welcome contributions to BoreaRL! Whether it's bug reports, feature requests, or pull requests, your help is appreciated. Please check the issues tracker for current tasks or open a new issue to discuss your ideas.
+
 ## License
 This project is released under the MIT License. See `LICENSE` for details.

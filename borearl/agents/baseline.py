@@ -288,3 +288,68 @@ def run_baseline_pair_for_seed(
     return result
 
 
+
+class HeuristicAgent:
+    """Base class for heuristic agents."""
+    def __init__(self, env):
+        self.env = env
+    
+    def predict(self, obs, deterministic=True):
+        raise NotImplementedError
+
+class TargetDensityAgent(HeuristicAgent):
+    """
+    Maintains a target density by thinning if too high and planting if too low.
+    Maintains a mixed species composition (0.5 conifer).
+    """
+    def __init__(self, env, target_density=1000, tolerance=100):
+        super().__init__(env)
+        self.target_density = target_density
+        self.tolerance = tolerance
+        
+    def predict(self, obs, deterministic=True):
+        # obs[2] is normalized density (density / 1500)
+        current_density = obs[2] * 1500.0
+        
+        action_density_idx = 2 # No change
+        
+        if current_density < self.target_density - self.tolerance:
+            # Plant
+            if current_density < self.target_density - self.tolerance - 50:
+                action_density_idx = 4 # +100
+            else:
+                action_density_idx = 3 # +50
+        elif current_density > self.target_density + self.tolerance:
+            # Thin
+            if current_density > self.target_density + self.tolerance + 50:
+                action_density_idx = 0 # -100
+            else:
+                action_density_idx = 1 # -50
+                
+        # Always target 0.5 mix
+        action_mix_idx = 2 
+        
+        action = action_density_idx * 5 + action_mix_idx
+        return action, None
+
+class ConiferRestorationAgent(HeuristicAgent):
+    """
+    Aggressively plants conifers to maximize carbon, similar to industrial forestry.
+    """
+    def __init__(self, env):
+        super().__init__(env)
+        
+    def predict(self, obs, deterministic=True):
+        # Always plant +50 density, target 1.0 conifer
+        # Unless density is already high (>1500), then do nothing
+        current_density = obs[2] * 1500.0
+        
+        if current_density < 1500:
+            action_density_idx = 3 # +50
+        else:
+            action_density_idx = 2 # 0
+            
+        action_mix_idx = 4 # 1.0 conifer
+        
+        action = action_density_idx * 5 + action_mix_idx
+        return action, None

@@ -73,7 +73,7 @@ class ForestEnv(gym.Env):
 
     # --- Asymmetric Thaw Reward Constants ---
     WARMING_PENALTY_FACTOR = const.WARMING_PENALTY_FACTOR
-    BOREARL_USE_CONTRAST_THAW = const.BOREARL_USE_CONTRAST_THAW
+    BOREARL_THAW_REWARD_MODE = const.BOREARL_THAW_REWARD_MODE
 
     # --- HWP Sales Reward ---
     MAX_HWP_SALES_PER_YEAR = const.MAX_HWP_SALES_PER_YEAR
@@ -728,15 +728,28 @@ class ForestEnv(gym.Env):
             self.cumulative_thaw_dd += thaw_dd_year
             normalized_carbon_change = np.clip(net_carbon_change / self.MAX_CARBON_CHANGE_PER_YEAR, -1.0, 1.0)
             
-            # Calculate normalized asymmetric thaw based on flag
-            if self.BOREARL_USE_CONTRAST_THAW:
+            # Calculate normalized asymmetric thaw based on selected mode
+            thaw_mode = self.BOREARL_THAW_REWARD_MODE
+            
+            if thaw_mode == "contrast":
+                # Contrast thaw: scale-invariant ratio normalization
                 F_pos = float(annual_results.get('positive_flux_sum', 0.0))
                 F_neg = float(annual_results.get('negative_flux_sum', 0.0))
                 alpha, beta = 1.0, 1.0
                 eps = 1e-6
                 contrast_thaw = (alpha * F_neg - beta * F_pos) / (F_neg + F_pos + eps)  # in [-beta, +alpha]
                 normalized_asymmetric_thaw = contrast_thaw
-            else:
+            elif thaw_mode == "raw_dd":
+                # Raw thaw degree days: direct measure without asymmetric penalty
+                # positive flux = warming (bad), negative flux = cooling (good)
+                # So we want: (cooling - warming) / normalization = (negative - positive) / norm
+                # This gives positive reward for net cooling, negative for net warming
+                raw_thaw_dd = -(thaw_dd_year)  # Flip sign so cooling is positive
+                normalized_asymmetric_thaw = np.clip(
+                    raw_thaw_dd / self.MAX_THAW_DEGREE_DAYS_PER_YEAR, -1.0, 1.0
+                )
+            else:  # "asymmetric" (default)
+                # Asymmetric thaw: penalty factor on warming flux
                 normalized_asymmetric_thaw = np.clip(
                     asymmetric_thaw_reward / self.MAX_THAW_DEGREE_DAYS_PER_YEAR, -1.0, 1.0
                 )
@@ -780,6 +793,9 @@ class ForestEnv(gym.Env):
                 self.consecutive_carbon_penalty_steps = 0
             raw_carbon_component = normalized_carbon_change + stock_bonus + hwp_sale_reward
             raw_thaw_component = normalized_asymmetric_thaw
+            # Clip final components to [-1.0, 1.0] to ensure hard bounds
+            raw_carbon_component = np.clip(raw_carbon_component, -1.0, 1.0)
+            raw_thaw_component = np.clip(raw_thaw_component, -1.0, 1.0)
             reward_vector = np.array([raw_carbon_component, raw_thaw_component], dtype=np.float32)
             # Save raw (pre-standardization) for logging/analysis
             self.last_raw_reward_vector = reward_vector.copy()

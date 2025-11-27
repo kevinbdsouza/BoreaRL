@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 Shared RL-level constants (separate from simulator physics constants).
 
@@ -45,9 +46,12 @@ MAX_DENSITY_CHANGE = float(max(abs(x) for x in DENSITY_ACTIONS))
 # Asymmetric thaw reward
 WARMING_PENALTY_FACTOR = 2.5 #5.0
 
-# Contrast thaw calculation flag
-# When True, use contrast thaw calculation instead of normalized asymmetric thaw
-BOREARL_USE_CONTRAST_THAW = False
+# Thaw reward mode selector
+# Options: "asymmetric" (default), "contrast", "raw_dd"
+# - "asymmetric": Uses asymmetric penalty (alpha=2.5) on heat flux (negative_flux_sum - 2.5*positive_flux_sum) / MAX_THAW_DD
+# - "contrast": Scale-invariant ratio (F_neg - F_pos) / (F_neg + F_pos), symmetric penalty, range [-1, 1]
+# - "raw_dd": Raw thaw degree days (positive_flux_sum - negative_flux_sum) / MAX_THAW_DD, no asymmetric penalty
+BOREARL_THAW_REWARD_MODE = "asymmetric"
 
 # HWP sales reward
 MAX_HWP_SALES_PER_YEAR = 1.0
